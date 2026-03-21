@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# PyInstaller
+*.spec
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Windows
+*.lnk
+
+# Build artifacts
+*.pyd
+*.dll
+*.exe
+
+# Model files (large, exclude from repo - users should generate their own)
+*.pkl
+*.pt
+*.pth
+*.onnx
+*.skill
+
+# CSV data files
+*.csv
+*.xlsx
+*.xls
+data/

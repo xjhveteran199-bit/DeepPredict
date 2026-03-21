@@ -6,16 +6,34 @@ DeepPredict - 低门槛深度学习预测工具
 import sys
 import os
 from pathlib import Path
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import Qt
 
-# 解决 Windows 上的高DPI问题
+# ====== 关键修复：PyInstaller frozen 环境下 DLL 搜索路径 ======
+if getattr(sys, 'frozen', False):
+    BASE_DIR = sys._MEIPASS
+    torch_lib = Path(BASE_DIR) / "torch" / "lib"
+    if torch_lib.exists():
+        os.add_dll_directory(str(torch_lib))
+        os.environ["PATH"] = str(torch_lib) + os.pathsep + os.environ.get("PATH", "")
+    python_dir = Path(sys.executable).parent
+    os.add_dll_directory(str(python_dir))
+    os.environ["PYTORCH_JIT"] = "0"
+
+# 解决 Windows 高DPI问题
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 os.environ["QT_SCALE_FACTOR_ROUNDING_POLICY"] = "Round"
 
-# 添加 src 目录到路径
-APP_ROOT = Path(__file__).parent
-sys.path.insert(0, str(APP_ROOT / "src"))
+from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import Qt
+
+# frozen=True 表示 PyInstaller 打包环境
+if getattr(sys, 'frozen', False):
+    APP_ROOT = Path(sys._MEIPASS)
+else:
+    APP_ROOT = Path(__file__).parent
+
+SRC_ROOT = APP_ROOT / "src"
+sys.path.insert(0, str(SRC_ROOT))
+sys.path.insert(0, str(APP_ROOT))
 
 from ui.main_window import MainWindow
 
@@ -39,7 +57,7 @@ def setup_logging():
 
 def main():
     logger = setup_logging()
-    logger.info("DeepPredict v1.0 启动")
+    logger.info("DeepPredict v1.01 启动")
     
     # 启用高DPI支持
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
@@ -48,8 +66,6 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("DeepPredict")
     app.setApplicationVersion("1.0.0")
-    
-    # 设置样式
     app.setStyle("Fusion")
     
     window = MainWindow()

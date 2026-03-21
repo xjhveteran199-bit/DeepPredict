@@ -87,15 +87,31 @@ class TaskRouter:
             }
         },
         'time_series': {
+            'PatchTST': {
+                'model': 'PatchTST',
+                'params': {
+                    'seq_len': 96,
+                    'pred_len': 96,
+                    'patch_size': 16,
+                    'd_model': 128,
+                    'n_heads': 4,
+                    'n_layers': 3,
+                    'd_ff': 256,
+                    'epochs': 30,
+                    'batch_size': 32,
+                    'learning_rate': 0.0005,
+                },
+                '适用': '⭐ Transformer时序预测，效果最强，适合长序列'
+            },
             'LSTM': {
-                'model': 'torch.nn.LSTM',
-                'params': {'hidden_size': 64, 'num_layers': 2, 'epochs': 50, 'batch_size': 32, 'seq_len': 10},
-                '适用': '深度学习时序预测，效果最好'
+                'model': 'LSTM',
+                'params': {'hidden_size': 64, 'num_layers': 2, 'epochs': 50, 'batch_size': 32, 'seq_len': 10, 'learning_rate': 0.001},
+                '适用': '深度学习时序预测，效果较好'
             },
             'GradientBoosting': {
                 'model': 'sklearn.ensemble.GradientBoostingRegressor',
                 'params': {'n_estimators': 100, 'learning_rate': 0.1, 'max_depth': 5},
-                '适用': '机器学习时序预测，效果较好'
+                '适用': '时序预测，效果较好'
             },
             'RandomForest': {
                 'model': 'sklearn.ensemble.RandomForestRegressor',
@@ -161,12 +177,14 @@ class TaskRouter:
         """选择最佳模型"""
         models = self.MODEL_POOL.get(task_type, self.MODEL_POOL['regression'])
         
-        # 时序任务：数据量足够（>200）优先 LSTM，否则用 GradientBoosting
+        # 时序任务：数据量足够（>=200）优先 PatchTST，其次 LSTM
         if task_type == 'time_series':
             shape = data_info.get('shape', (0, 0))
             data_size = shape[0] if shape else 0
             
-            if data_size >= 200 and 'LSTM' in models:
+            if data_size >= 200 and 'PatchTST' in models:
+                return 'PatchTST', models['PatchTST']['params']
+            elif data_size >= 100 and 'LSTM' in models:
                 return 'LSTM', models['LSTM']['params']
             elif 'GradientBoosting' in models:
                 return 'GradientBoosting', models['GradientBoosting']['params']

@@ -33,9 +33,7 @@ class LSTMModel(nn.Module):
         self.fc = nn.Linear(hidden_size, 1)
     
     def forward(self, x):
-        # x shape: (batch, seq_len, input_size)
         lstm_out, _ = self.lstm(x)
-        # 取最后一个时间步的输出
         out = self.fc(lstm_out[:, -1, :])
         return out.squeeze(-1)
 
@@ -56,7 +54,6 @@ class LSTMPredictor:
         self.target_col: str = ""
     
     def _create_sequences(self, data: np.ndarray, target: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """创建时序窗口数据"""
         X, y = [], []
         for i in range(len(data) - self.seq_len):
             X.append(data[i:i + self.seq_len])
@@ -64,7 +61,6 @@ class LSTMPredictor:
         return np.array(X), np.array(y)
     
     def _normalize(self, data: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """标准化数据"""
         mean = np.mean(data, axis=0)
         std = np.std(data, axis=0) + 1e-8
         return (data - mean) / std, mean, std
@@ -82,40 +78,31 @@ class LSTMPredictor:
         test_size: float = 0.2,
         target_col: str = ""
     ) -> Tuple[bool, str]:
-        """
-        训练 LSTM 模型
-        """
         try:
             self.target_col = target_col
             self.seq_len = seq_len
             
-            # 数据归一化
             data = np.column_stack([X, y])
             data_normalized, self.scaler_mean, self.scaler_std = self._normalize(data)
             
             X_norm = data_normalized[:, :-1]
             y_norm = data_normalized[:, -1]
             
-            # 创建序列
             X_seq, y_seq = self._create_sequences(X_norm, y_norm)
             
-            # 划分训练集/测试集
             split_idx = int(len(X_seq) * (1 - test_size))
             X_train, X_test = X_seq[:split_idx], X_seq[split_idx:]
             y_train, y_test = y_seq[:split_idx], y_seq[split_idx:]
             
-            # 转 Tensor
             X_train_t = torch.FloatTensor(X_train)
             y_train_t = torch.FloatTensor(y_train)
             X_test_t = torch.FloatTensor(X_test)
             y_test_t = torch.FloatTensor(y_test)
             
-            # DataLoader
             train_dataset = TensorDataset(X_train_t, y_train_t)
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
             
-            # 模型
-            self.input_size = X_train.shape[2]  # 特征维度
+            self.input_size = X_train.shape[2]
             self.model = LSTMModel(
                 input_size=self.input_size,
                 hidden_size=hidden_size,
@@ -125,7 +112,6 @@ class LSTMPredictor:
             criterion = nn.MSELoss()
             optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
             
-            # 训练
             self.model.train()
             for epoch in range(epochs):
                 epoch_loss = 0
@@ -138,35 +124,28 @@ class LSTMPredictor:
                     loss = criterion(output, batch_y)
                     loss.backward()
                     optimizer.step()
-                    
                     epoch_loss += loss.item()
                 
                 if (epoch + 1) % 10 == 0:
                     logger.info(f"LSTM Epoch {epoch+1}/{epochs}, Loss: {epoch_loss/len(train_loader):.6f}")
             
-            # 评估
             self.model.eval()
             with torch.no_grad():
                 X_test_t = X_test_t.to(self.device)
                 predictions = self.model(X_test_t).cpu().numpy()
                 
-                # 反归一化
-                # 重建测试数据的归一化数组
-                test_data_normalized = np.zeros((len(y_test), data_normalized.shape[1]))
-                test_data_normalized[:, -1] = predictions
-                pred_denorm = test_data_normalized * self.scaler_std + self.scaler_mean
+                test_data_norm = np.zeros((len(y_test), data_normalized.shape[1]))
+                test_data_norm[:, -1] = predictions
+                pred_denorm = test_data_norm * self.scaler_std + self.scaler_mean
                 predictions = pred_denorm[:, -1]
                 
-                test_data_normalized[:, -1] = y_test
-                y_test_denorm = test_data_normalized * self.scaler_std + self.scaler_mean
+                test_data_norm[:, -1] = y_test
+                y_test_denorm = test_data_norm * self.scaler_std + self.scaler_mean
                 y_test_actual = y_test_denorm[:, -1]
                 
-                # 计算指标
                 mse = np.mean((predictions - y_test_actual) ** 2)
                 rmse = np.sqrt(mse)
                 mae = np.mean(np.abs(predictions - y_test_actual))
-                
-                # R²
                 ss_res = np.sum((y_test_actual - predictions) ** 2)
                 ss_tot = np.sum((y_test_actual - np.mean(y_test_actual)) ** 2)
                 r2 = 1 - ss_res / (ss_tot + 1e-8)
@@ -190,19 +169,15 @@ class LSTMPredictor:
             return False, f"LSTM 训练失败: {str(e)}"
     
     def predict(self, X: np.ndarray) -> np.ndarray:
-        """对新数据预测"""
         if not self.is_fitted or self.model is None:
             raise ValueError("模型未训练，请先训练模型")
         
         self.model.eval()
         
-        # 归一化
         data = np.column_stack([X, np.zeros(len(X))])
         data_normalized = (data - self.scaler_mean) / self.scaler_std
         
         X_norm = data_normalized[:, :-1]
-        
-        # 创建序列
         X_seq, _ = self._create_sequences(X_norm, np.zeros(len(X_norm)))
         
         if len(X_seq) == 0:
@@ -213,7 +188,6 @@ class LSTMPredictor:
         with torch.no_grad():
             predictions = self.model(X_t).cpu().numpy()
         
-        # 反归一化
         pred_data = np.zeros((len(predictions), len(self.scaler_mean)))
         pred_data[:, -1] = predictions
         pred_denorm = pred_data * self.scaler_std + self.scaler_mean
@@ -221,7 +195,6 @@ class LSTMPredictor:
         return pred_denorm[:, -1]
     
     def save_model(self, path: str):
-        """保存模型"""
         torch.save({
             'model_state': self.model.state_dict(),
             'scaler_mean': self.scaler_mean,
@@ -237,7 +210,6 @@ class LSTMPredictor:
         logger.info(f"LSTM 模型已保存: {path}")
     
     def load_model(self, path: str):
-        """加载模型"""
         data = torch.load(path, map_location=self.device)
         
         self.scaler_mean = data['scaler_mean']

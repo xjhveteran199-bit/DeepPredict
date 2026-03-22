@@ -112,7 +112,7 @@ class CNN1DModelV4(nn.Module):
 
 
 class CNN1DPredictorV4:
-    """CNN1D 预测器 v4 - 直接多步预测"""
+    """CNN1D 预测器 v4 - 直接多步预测，带校准偏移"""
 
     def __init__(self):
         self.model: Optional[CNN1DModelV4] = None
@@ -126,6 +126,7 @@ class CNN1DPredictorV4:
         self.metrics: Dict[str, float] = {}
         self.device: str = "cpu"
         self.target_col: str = ""
+        self._bias_offset: float = 0.0  # 校准偏移量
 
     def train(
         self,
@@ -239,6 +240,14 @@ class CNN1DPredictorV4:
                 mae = mean_absolute_error(y_test_actual, test_pred)
                 r2 = r2_score(y_test_actual.flatten(), test_pred.flatten())
 
+                # 计算校准偏移量：用测试集前几步预测的第一步的平均误差
+                n_calib = min(10, len(test_pred_norm))
+                bias_sum = 0.0
+                for i in range(n_calib):
+                    bias_sum += test_pred_norm[i][0] - y_test_np[i][0]
+                self._bias_offset = (bias_sum / n_calib) * self._target_std
+                logger.info(f"校准偏移量: {self._bias_offset:.4f}")
+
                 self.metrics = {
                     'RMSE': float(rmse),
                     'MAE': float(mae),
@@ -249,6 +258,7 @@ class CNN1DPredictorV4:
                     'seq_len': seq_len,
                     'pred_len': pred_len,
                     'epochs': epochs,
+                    'bias_offset': self._bias_offset,
                 }
 
             self.is_fitted = True
@@ -292,8 +302,8 @@ class CNN1DPredictorV4:
         with torch.no_grad():
             pred_norm = self.model(x_tensor).cpu().numpy()[0]
         
-        # 反归一化
-        pred = pred_norm * self._target_std + self._target_mean
+        # 反归一化 + 校准偏移
+        pred = pred_norm * self._target_std + self._target_mean - self._bias_offset
         
         return pred[:pred_len]
 
@@ -319,14 +329,14 @@ class CNN1DPredictorV4:
             with torch.no_grad():
                 pred_norm = self.model(x_tensor).cpu().numpy()[0]
             
-            # 反归一化
-            pred = pred_norm * self._target_std + self._target_mean
+            # 反归一化 + 校准偏移
+            pred = pred_norm * self._target_std + self._target_mean - self._bias_offset
             
             # 取第一步
             next_val = float(pred[0])
             all_preds.append(next_val)
             
-            # 更新 X
+            # 更新 X（用校准后的预测值）
             X = np.vstack([X, [[next_val]]])
 
         result = np.array(all_preds)
@@ -338,7 +348,7 @@ class CNN1DPredictorV4:
     def save_model(self, path: str):
         if self.model is None:
             raise ValueError("没有可保存的模型")
-        torch.save({
+        save_data = {
             'model_state': self.model.state_dict(),
             'target_mean': self._target_mean,
             'target_std': self._target_std,
@@ -346,7 +356,8 @@ class CNN1DPredictorV4:
             'pred_len': self.pred_len,
             'n_features': self.n_features,
             'metrics': self.metrics,
-        }, path)
+        }
+        torch.save(save_data, path)
         logger.info(f"CNN1D-V4 模型已保存: {path}")
 
     def load_model(self, path: str):
@@ -358,6 +369,7 @@ class CNN1DPredictorV4:
         self.pred_len = data['pred_len']
         self.n_features = data['n_features']
         self.metrics = data.get('metrics', {})
+        self._bias_offset = self.metrics.get('bias_offset', 0.0)
         
         hidden_channels = self.metrics.get('hidden_channels', 128)
         num_layers = self.metrics.get('num_layers', 3)

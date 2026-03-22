@@ -263,6 +263,29 @@ class SklearnPredictor:
             return {}
         return dict(zip(self.feature_names, self.model.feature_importances_))
 
+    def predict_future(self, last_X: np.ndarray, steps: int = 30) -> np.ndarray:
+        """
+        滚动预测未来 steps 步（用于时序预测）
+        last_X: 最后一个时间点的特征向量 (n_features,)
+        返回: (steps,) 预测值
+        """
+        if not self.is_fitted:
+            raise ValueError("请先训练模型")
+        preds = []
+        x_cur = last_X.copy()
+        for _ in range(steps):
+            try:
+                x_scaled = self.scaler.transform(x_cur.reshape(1, -1))
+                p = self.model.predict(x_scaled)[0]
+                preds.append(p)
+                # 更新：如果是单变量时序（feature_names 只有一列），直接替换
+                # 如果是多变量，需要把预测值更新回去（这里简化处理：假设单变量）
+                if len(self.feature_names) == 1:
+                    x_cur[0] = p
+            except Exception:
+                break
+        return np.array(preds) if preds else np.array([])
+
 
 # ============ 全局状态 ============
 data_loader = DataLoader()
@@ -386,14 +409,30 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                         placeholder="示例：预测K值变化趋势\n预测Glu未来走势\n判断是否流失",
                         lines=2
                     )
+                    
+                    n_future = gr.Number(
+                        label="⑥ 预测未来多少步",
+                        value=30,
+                        info="训练完成后自动预测未来N步的值，默认30步",
+                        precision=0
+                    )
                 
                 # === 结果展示 ===
                 with gr.Column(scale=1):
                     gr.Markdown("### ⚙️ 任务配置预览")
                     config_out = gr.Markdown("*配置信息将显示在这里*")
                     
-                    gr.Markdown("### 📊 训练结果")
-                    result_out = gr.Textbox(label="", lines=8, interactive=False)
+                    gr.Markdown("### 📊 训练结果（模型评价）")
+                    result_out = gr.Textbox(label="", lines=6, interactive=False)
+                    
+                    gr.Markdown("### 📈 未来趋势预测")
+                    forecast_plot = gr.Plot(label="趋势预测图（蓝色=历史，橙色=预测）")
+                    
+                    gr.Markdown("### 🔮 未来预测值")
+                    forecast_out = gr.Textbox(label="", lines=10, interactive=False)
+                    
+                    gr.Markdown("### 💬 趋势结论")
+                    summary_out = gr.Markdown("*训练完成后自动生成趋势总结*")
                     
                     gr.Markdown("### 🔍 特征重要性")
                     importance_out = gr.Markdown("")
@@ -484,7 +523,7 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
             gr.update(choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"], value="自动推荐")
         ]
     
-    def on_train(feature_col, target_col, predict_mode, model_select, requirement, prog=gr.Progress()):
+    def on_train(feature_col, target_col, predict_mode, model_select, requirement, n_future, prog=gr.Progress()):
         global predictor, lstm_pred
         
         if data_loader.df is None:
@@ -641,7 +680,147 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                 top10 = sorted(imp.items(), key=lambda x: x[1], reverse=True)[:10]
                 importance = "\n".join([f"`{k}`: {v:.4f}" for k, v in top10])
         
-        return msg, config, importance
+        # ===== 生成未来预测 ======
+        forecast_plot = None
+        forecast_text = ""
+        summary_text = ""
+        n_steps = max(1, int(n_future or 30))
+        
+        if success and lstm_pred and lstm_pred.is_fitted:
+            try:
+                # 取最后 seq_len 个样本作为预测起点
+                seq_len = lstm_pred.seq_len if hasattr(lstm_pred, 'seq_len') else 96
+                X_last = y[-seq_len:] if len(y) >= seq_len else y
+                future_preds = lstm_pred.predict_future(X_last, steps=n_steps)
+                
+                if future_preds is not None and len(future_preds) > 0:
+                    # 1. 绘制趋势图
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as plt
+                    
+                    last_n = min(100, len(y))
+                    hist = y[-last_n:]
+                    steps_hist = list(range(len(y) - last_n, len(y)))
+                    steps_fut = list(range(len(y), len(y) + len(future_preds)))
+                    
+                    fig, ax = plt.subplots(figsize=(10, 4))
+                    ax.plot(steps_hist, hist, color='#3B82F6', linewidth=2, label='历史数据')
+                    ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--', label='预测')
+                    ax.axvline(x=len(y) - 0.5, color='gray', linestyle=':', linewidth=1)
+                    ax.set_xlabel('时间步', fontsize=11)
+                    ax.set_ylabel(target_col, fontsize=11)
+                    ax.set_title(f'{target_col} 趋势预测（未来 {n_steps} 步）', fontsize=13, fontweight='bold')
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    forecast_plot = fig
+                    plt.close(fig)
+                    
+                    # 2. 预测值表格
+                    rows = []
+                    for i, val in enumerate(future_preds):
+                        rows.append(f"  第 {i+1:3d} 步  →  **{val:.4f}**")
+                    forecast_text = f"**未来 {len(future_preds)} 步预测值（{target_col}）：**\n\n" + "\n".join(rows[:30])
+                    if len(future_preds) > 30:
+                        forecast_text += f"\n  ...（共 {len(future_preds)} 步，已截取前30步）"
+                    
+                    # 3. 自然语言总结
+                    first_val = float(future_preds[0])
+                    last_val = float(future_preds[-1])
+                    change = last_val - first_val
+                    pct = (change / abs(first_val) * 100) if first_val != 0 else 0
+                    
+                    # 判断趋势
+                    if change > 0:
+                        trend = "📈 **上升趋势**"
+                        trend_desc = f"从 {first_val:.4f} 上涨到 {last_val:.4f}，涨幅 **{abs(change):.4f}**（{abs(pct):.1f}%）"
+                    elif change < 0:
+                        trend = "📉 **下降趋势**"
+                        trend_desc = f"从 {first_val:.4f} 下降到 {last_val:.4f}，跌幅 **{abs(change):.4f}**（{abs(pct):.1f}%）"
+                    else:
+                        trend = "➡️ **基本平稳**"
+                        trend_desc = f"基本维持在 {last_val:.4f} 附近"
+                    
+                    # 波动分析
+                    diffs = [future_preds[i+1] - future_preds[i] for i in range(len(future_preds)-1)]
+                    volatility = sum(1 for d in diffs if abs(d) > 0.05 * abs(first_val)) / max(1, len(diffs))
+                    
+                    summary_text = (
+                        f"**{target_col} 未来 {n_steps} 步趋势总结**\n\n"
+                        f"**趋势方向**：{trend}\n\n"
+                        f"{trend_desc}\n\n"
+                        f"**预测区间**：{min(future_preds):.4f} ~ {max(future_preds):.4f}\n\n"
+                        f"**预测均值**：{sum(future_preds)/len(future_preds):.4f}\n\n"
+                        f"**稳定性**：{'波动较小，趋势较稳定' if volatility < 0.3 else '有一定波动，请结合实际判断'}\n\n"
+                        f"💡 *以上为模型自动预测结果，仅供参考，实际走势可能受外部因素影响。*"
+                    )
+            except Exception as e:
+                forecast_text = f"趋势预测生成失败：{str(e)}"
+                summary_text = "*趋势预测生成失败，请查看上方训练结果*"
+        
+        # sklearn 模型的未来预测
+        elif success and predictor and predictor.is_fitted and predictor.task_type != 'classification':
+            try:
+                last_X = X_for_model[-1] if len(X_for_model) > 0 else np.array([y[-1]])
+                future_preds = predictor.predict_future(last_X, steps=n_steps)
+                
+                if future_preds is not None and len(future_preds) > 0:
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as plt
+                    
+                    last_n = min(100, len(y))
+                    hist = y[-last_n:]
+                    steps_hist = list(range(len(y) - last_n, len(y)))
+                    steps_fut = list(range(len(y), len(y) + len(future_preds)))
+                    
+                    fig, ax = plt.subplots(figsize=(10, 4))
+                    ax.plot(steps_hist, hist, color='#3B82F6', linewidth=2, label='历史数据')
+                    ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--', label='预测')
+                    ax.axvline(x=len(y) - 0.5, color='gray', linestyle=':', linewidth=1)
+                    ax.set_xlabel('时间步', fontsize=11)
+                    ax.set_ylabel(target_col, fontsize=11)
+                    ax.set_title(f'{target_col} 趋势预测（未来 {n_steps} 步）', fontsize=13, fontweight='bold')
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    forecast_plot = fig
+                    plt.close(fig)
+                    
+                    rows = [f"  第 {i+1:3d} 步  →  **{val:.4f}**" for i, val in enumerate(future_preds[:30])]
+                    forecast_text = f"**未来 {len(future_preds)} 步预测值（{target_col}）：**\n\n" + "\n".join(rows)
+                    if len(future_preds) > 30:
+                        forecast_text += f"\n  ...（共 {len(future_preds)} 步，已截取前30步）"
+                    
+                    first_val = float(future_preds[0])
+                    last_val = float(future_preds[-1])
+                    change = last_val - first_val
+                    pct = (change / abs(first_val) * 100) if first_val != 0 else 0
+                    
+                    if change > 0:
+                        trend = "📈 **上升趋势**"
+                        trend_desc = f"从 {first_val:.4f} 上涨到 {last_val:.4f}，涨幅 **{abs(change):.4f}**（{abs(pct):.1f}%）"
+                    elif change < 0:
+                        trend = "📉 **下降趋势**"
+                        trend_desc = f"从 {first_val:.4f} 下降到 {last_val:.4f}，跌幅 **{abs(change):.4f}**（{abs(pct):.1f}%）"
+                    else:
+                        trend = "➡️ **基本平稳**"
+                        trend_desc = f"基本维持在 {last_val:.4f} 附近"
+                    
+                    summary_text = (
+                        f"**{target_col} 未来 {n_steps} 步趋势总结**\n\n"
+                        f"**趋势方向**：{trend}\n\n"
+                        f"{trend_desc}\n\n"
+                        f"**预测区间**：{min(future_preds):.4f} ~ {max(future_preds):.4f}\n\n"
+                        f"**预测均值**：{sum(future_preds)/len(future_preds):.4f}\n\n"
+                        f"💡 *以上为模型自动预测结果，仅供参考。*"
+                    )
+            except Exception as e:
+                forecast_text = f"趋势预测生成失败：{str(e)}"
+                summary_text = "*趋势预测生成失败，请查看上方训练结果*"
+        
+        return msg, config, importance, forecast_plot, forecast_text, summary_text
     
     def on_predict(file):
         global predictor, lstm_pred
@@ -681,8 +860,8 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
     )
     train_btn.click(
         on_train,
-        inputs=[feature_col, target_col, predict_mode, model_select, requirement],
-        outputs=[result_out, config_out, importance_out]
+        inputs=[feature_col, target_col, predict_mode, model_select, requirement, n_future],
+        outputs=[result_out, config_out, importance_out, forecast_plot, forecast_out, summary_out]
     )
     predict_btn.click(on_predict, inputs=[predict_file], outputs=[predict_status, predict_out])
 

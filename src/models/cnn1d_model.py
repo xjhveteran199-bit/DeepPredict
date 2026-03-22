@@ -1,6 +1,9 @@
 """
-CNN1D 时序预测模型
-基于 PyTorch 实现 1D 卷积神经网络，适合传感器等规则化时序信号
+CNN1D 时序预测模型 v4
+完全参照 PatchTST 成功模式：
+1. 直接多步预测（一次性输出所有 pred_len 步）
+2. RevIN 归一化
+3. 直接用最后 seq_len 步预测接下来 pred_len 步
 """
 
 import torch
@@ -12,125 +15,126 @@ from typing import Tuple, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-class CNN1DBlock(nn.Module):
-    """单层 1D CNN block: Conv -> BN -> ReLU -> Pooling"""
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, pool_size: int = 2):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size, padding=kernel_size // 2),
-            nn.BatchNorm1d(out_channels),
-            nn.ReLU(),
-            nn.MaxPool1d(pool_size)
-        )
-
+class RevIN:
+    """Reversible Instance Normalization - 时序预测专用归一化"""
+    def __init__(self, eps: float = 1e-5):
+        self.eps = eps
+        self.mean = None
+        self.std = None
+    
     def forward(self, x):
-        return self.block(x)
+        # x: (batch, seq_len) or (batch, seq_len, channels)
+        if self.mean is None:
+            self.mean = x.mean(dim=1, keepdim=True)
+            self.std = x.std(dim=1, keepdim=True) + self.eps
+        return (x - self.mean) / self.std
+    
+    def backward(self, x):
+        # x: (batch, seq_len) or (batch, seq_len, channels)
+        return x * self.std + self.mean
 
 
-class CNN1DModel(nn.Module):
+class CNN1DModelV4(nn.Module):
     """
-    1D CNN 时序预测模型
-    - 多层 1D 卷积提取局部特征
-    - 全局平均池化聚合时序信息
-    - FC 头输出预测值
+    改进版 CNN1D 时序预测模型
+    
+    参照 PatchTST 架构：
+    1. Patch 化：把时序分成多个 patch
+    2. CNN 特征提取
+    3. 直接多步预测
     """
 
     def __init__(
         self,
-        input_size: int = 1,      # 输入通道数（特征数）
-        hidden_channels: list = None,
+        input_size: int = 1,
+        hidden_channels: int = 128,
+        num_layers: int = 3,
         kernel_size: int = 3,
-        seq_len: int = 100,
-        dropout: float = 0.2
+        seq_len: int = 96,
+        pred_len: int = 48,
+        dropout: float = 0.1
     ):
         super().__init__()
-        if hidden_channels is None:
-            hidden_channels = [32, 64, 128]
-
+        
         self.seq_len = seq_len
-        self.input_size = input_size
-
-        # 构建卷积层
-        layers = []
-        in_ch = input_size
-        for i, out_ch in enumerate(hidden_channels):
-            pool_size = 2 if i < len(hidden_channels) - 1 else 1
-            layers.append(CNN1DBlock(in_ch, out_ch, kernel_size, pool_size))
-            in_ch = out_ch
-
-        self.conv_blocks = nn.Sequential(*layers)
-        self.dropout = nn.Dropout(dropout)
-
-        # 计算展平后的维度（需要根据实际计算，或用自适应）
-        # 简化：用自适应全局池化
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
-
-        # 全连接头
-        self.fc = nn.Sequential(
-            nn.Linear(hidden_channels[-1], 64),
-            nn.ReLU(),
+        self.pred_len = pred_len
+        
+        # Patch embedding：用卷积做 patch
+        # 把 seq_len 分成 patches，每个 patch 大小 = patch_size
+        self.patch_size = 16
+        self.num_patches = seq_len // self.patch_size
+        
+        self.patch_embed = nn.Conv1d(
+            input_size, hidden_channels,
+            kernel_size=self.patch_size,
+            stride=self.patch_size
+        )
+        
+        # 多层 CNN 特征提取
+        self.encoder_layers = nn.ModuleList()
+        for i in range(num_layers):
+            self.encoder_layers.append(nn.Sequential(
+                nn.Conv1d(hidden_channels, hidden_channels, kernel_size, padding=kernel_size//2),
+                nn.BatchNorm1d(hidden_channels),
+                nn.GELU(),
+                nn.Dropout(dropout)
+            ))
+        
+        # 预测头：输出 pred_len 步
+        self.head = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 1)
+            nn.Linear(hidden_channels // 2, pred_len)
         )
 
     def forward(self, x):
         # x: (batch, seq_len, input_size)
-        # Conv1d 需要 (batch, channels, length)
-        x = x.permute(0, 2, 1)
-        x = self.conv_blocks(x)
-        x = self.global_pool(x).squeeze(-1)  # (batch, last_hidden)
-        x = self.dropout(x)
-        out = self.fc(x).squeeze(-1)
+        batch_size = x.shape[0]
+        
+        # 转 (batch, input_size, seq_len)
+        x = x.transpose(1, 2)
+        
+        # Patch embedding: (batch, input_size, seq_len) -> (batch, hidden_channels, num_patches)
+        x = self.patch_embed(x)
+        
+        # CNN 编码
+        for layer in self.encoder_layers:
+            x = layer(x)
+        
+        # 全局平均池化: (batch, hidden_channels, num_patches) -> (batch, hidden_channels)
+        x = x.mean(dim=-1)
+        
+        # 预测
+        out = self.head(x)  # (batch, pred_len)
+        
         return out
 
 
-class CNN1DPredictor:
-    """
-    CNN1D 时序预测器
-    支持多通道输入，适合传感器融合场景
-    """
+class CNN1DPredictorV4:
+    """CNN1D 预测器 v4 - 直接多步预测"""
 
     def __init__(self):
-        self.model: Optional[CNN1DModel] = None
-        self.scaler_X_mean: Optional[np.ndarray] = None
-        self.scaler_X_std: Optional[np.ndarray] = None
-        self.scaler_y_mean: Optional[np.ndarray] = None
-        self.scaler_y_std: Optional[np.ndarray] = None
-        self.seq_len: int = 100
+        self.model: Optional[CNN1DModelV4] = None
+        self.revin = None
+        self._target_mean: Optional[float] = None
+        self._target_std: Optional[float] = None
+        self.seq_len: int = 96
+        self.pred_len: int = 48
         self.n_features: int = 1
         self.is_fitted: bool = False
         self.metrics: Dict[str, float] = {}
         self.device: str = "cpu"
         self.target_col: str = ""
 
-    def _normalize(self, data: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        mean = np.mean(data, axis=0)
-        std = np.std(data, axis=0) + 1e-8
-        return (data - mean) / std, mean, std
-
-    def _create_sequences(self, data: np.ndarray, target: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        X, y = [], []
-        for i in range(len(data) - self.seq_len):
-            # data[i:i+self.seq_len] 的 shape 取决于 data 维度：
-            # 1D: (seq_len,) -> ok
-            # 2D: (seq_len, n_features) -> ok, list of 2D arrays
-            X.append(np.array(data[i:i + self.seq_len]))
-            y.append(target[i + self.seq_len])
-        # 确保 X 是 3D (samples, seq_len, features), y 是 1D 或 2D
-        X = np.array(X)
-        if len(X.shape) == 2:
-            X = X.reshape(-1, self.seq_len, 1)  # (n, seq_len, 1)
-        y = np.array(y)
-        if len(y.shape) == 2:
-            y = y.squeeze(-1)
-        return X, y
-
     def train(
         self,
         X: np.ndarray,
         y: np.ndarray,
-        seq_len: int = 100,
-        hidden_channels: list = None,
+        seq_len: int = 96,
+        pred_len: int = 48,
+        hidden_channels: int = 128,
+        num_layers: int = 3,
         kernel_size: int = 3,
         epochs: int = 50,
         batch_size: int = 32,
@@ -139,78 +143,63 @@ class CNN1DPredictor:
         target_col: str = "",
         **kwargs
     ) -> Tuple[bool, str]:
-        """
-        训练 CNN1D 模型
-
-        Args:
-            X: 特征数据 (n_samples, n_features)，支持多通道
-            y: 目标数据 (n_samples,)
-            seq_len: 输入序列长度
-            hidden_channels: 卷积通道列表，如 [32, 64, 128]
-            kernel_size: 卷积核大小
-            epochs: 训练轮数
-            batch_size: 批次大小
-            learning_rate: 学习率
-            test_size: 测试集比例
-        """
         try:
             from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-            if hidden_channels is None:
-                hidden_channels = [32, 64, 128]
-
             self.target_col = target_col
             self.seq_len = seq_len
+            self.pred_len = pred_len
 
             # 处理维度
-            if len(X.shape) == 1:
+            if X.ndim == 1:
                 X = X.reshape(-1, 1)
-            if len(y.shape) == 1:
-                y = y.reshape(-1, 1)
-
+            if y.ndim > 1:
+                y = y.ravel()
+            
             n_samples = min(len(X), len(y))
             X = X[:n_samples]
             y = y[:n_samples]
             n_features = X.shape[1]
             self.n_features = n_features
 
-            # 归一化
-            X_norm, self.scaler_X_mean, self.scaler_X_std = self._normalize(X)
-            y_norm, self.scaler_y_mean, self.scaler_y_std = self._normalize(y)
-            # 展平 y：y_norm 可能是 (n, n_targets)，取第一列再展平避免列数×样本数膨胀
-            if len(y_norm.shape) > 1 and y_norm.shape[1] > 1:
-                logger.warning(f"y 有 {y_norm.shape[1]} 列，只取第一列作为预测目标")
-                y_norm = y_norm[:, :1]
-            y_flat = y_norm.ravel()  # (n,)
+            # 用训练集的 mean/std 归一化
+            self._target_mean = float(np.mean(y))
+            self._target_std = float(np.std(y)) + 1e-8
+            y_norm = (y - self._target_mean) / self._target_std
 
             # 构建序列
-            X_seq, y_seq = self._create_sequences(X_norm, y_flat)
+            X_seqs, y_seqs = [], []
+            for i in range(seq_len, n_samples - pred_len + 1):
+                X_seqs.append(X[i - seq_len:i])      # (seq_len, n_features)
+                y_seqs.append(y_norm[i:i + pred_len])  # (pred_len,)
+            
+            n_seqs = len(X_seqs)
+            if n_seqs < 10:
+                return False, f"样本不足：{n_seqs}"
 
+            X_tensor = torch.FloatTensor(np.array(X_seqs))
+            y_tensor = torch.FloatTensor(np.array(y_seqs))
+            
             # 划分
-            split_idx = int(len(X_seq) * (1 - test_size))
-            if split_idx < 10:
-                return False, f"训练数据不足（{split_idx} 个样本），请减少 seq_len 或增加数据量"
-
-            X_train = torch.FloatTensor(X_seq[:split_idx])
-            y_train = torch.FloatTensor(y_seq[:split_idx])
-            X_test = torch.FloatTensor(X_seq[split_idx:])
-            y_test = torch.FloatTensor(y_seq[split_idx:])
+            split_idx = int(len(X_tensor) * (1 - test_size))
+            X_train, X_test = X_tensor[:split_idx], X_tensor[split_idx:]
+            y_train, y_test = y_tensor[:split_idx], y_tensor[split_idx:]
 
             # 模型
-            self.model = CNN1DModel(
+            self.model = CNN1DModelV4(
                 input_size=n_features,
                 hidden_channels=hidden_channels,
+                num_layers=num_layers,
                 kernel_size=kernel_size,
-                seq_len=seq_len
+                seq_len=seq_len,
+                pred_len=pred_len
             ).to(self.device)
 
             criterion = nn.MSELoss()
             optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-            train_losses = []
             self.model.train()
-
             for epoch in range(epochs):
                 indices = torch.randperm(len(X_train))
                 epoch_loss = 0
@@ -232,11 +221,9 @@ class CNN1DPredictor:
                     n_batches += 1
 
                 scheduler.step()
-                avg_loss = epoch_loss / max(n_batches, 1)
-                train_losses.append(avg_loss)
 
-                if (epoch + 1) % 10 == 0 or epoch == 0:
-                    logger.info(f"CNN1D Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}")
+                if (epoch + 1) % 10 == 0:
+                    logger.info(f"CNN1D-V4 Epoch {epoch+1}/{epochs}, Loss: {epoch_loss/max(n_batches,1):.6f}")
 
             # 评估
             self.model.eval()
@@ -245,167 +232,145 @@ class CNN1DPredictor:
                 y_test_np = y_test.numpy()
 
                 # 反归一化
-                test_pred = test_pred_norm * self.scaler_y_std + self.scaler_y_mean
-                y_test_actual = y_test_np * self.scaler_y_std + self.scaler_y_mean
+                test_pred = test_pred_norm * self._target_std + self._target_mean
+                y_test_actual = y_test_np * self._target_std + self._target_mean
 
-                mse = mean_squared_error(y_test_actual, test_pred)
-                rmse = np.sqrt(mse)
+                rmse = np.sqrt(mean_squared_error(y_test_actual, test_pred))
                 mae = mean_absolute_error(y_test_actual, test_pred)
-                ss_res = np.sum((y_test_actual - test_pred) ** 2)
-                ss_tot = np.sum((y_test_actual - np.mean(y_test_actual)) ** 2)
-                r2 = 1 - ss_res / (ss_tot + 1e-8)
+                r2 = r2_score(y_test_actual.flatten(), test_pred.flatten())
 
                 self.metrics = {
                     'RMSE': float(rmse),
                     'MAE': float(mae),
                     'R2': float(r2),
-                    'model': 'CNN1D',
+                    'model': 'CNN1D-V4',
                     'hidden_channels': hidden_channels,
-                    'kernel_size': kernel_size,
+                    'num_layers': num_layers,
                     'seq_len': seq_len,
+                    'pred_len': pred_len,
                     'epochs': epochs,
-                    'final_train_loss': float(train_losses[-1])
                 }
 
             self.is_fitted = True
 
             msg = (
-                f"✅ CNN1D 训练完成！\n\n"
-                f"   模型: 1D-CNN (channels={hidden_channels})\n"
-                f"   窗口: seq_len={seq_len}, kernel={kernel_size}\n"
+                f"✅ CNN1D-V4 训练完成！\n\n"
+                f"   模型: CNN (hidden={hidden_channels}, layers={num_layers})\n"
+                f"   窗口: seq_len={seq_len}, pred_len={pred_len}\n"
                 f"   训练样本: {len(X_train)}, 测试样本: {len(X_test)}\n\n"
                 f"   **R²** 分数: {r2:.4f}\n"
                 f"   **RMSE**: {rmse:.4f}\n"
                 f"   **MAE**: {mae:.4f}\n\n"
-                f"💡 CNN1D 擅长时间序列局部特征提取，适合传感器信号"
+                f"💡 CNN with patch embedding for direct multi-step prediction"
             )
 
-            logger.info(f"CNN1D 训练完成: R2={r2:.4f}, RMSE={rmse:.4f}")
+            logger.info(f"CNN1D-V4 训练完成: R2={r2:.4f}, RMSE={rmse:.4f}")
             return True, msg
 
         except Exception as e:
-            logger.error(f"CNN1D 训练失败: {e}")
-            import traceback; logger.error(traceback.format_exc())
-            return False, f"❌ CNN1D 训练失败: {str(e)}"
+            logger.error(f"CNN1D-V4 训练失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False, f"❌ 训练失败: {str(e)}"
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """
-        批量预测：给定连续的 seq_len 窗口，预测每个窗口之后 1 步
-        X: (n_samples, n_features) 或 (n_samples,)
-        返回: (n_windows,) 预测值，每个对应输入窗口之后 1 步
-        """
+    def predict(self, X: np.ndarray, pred_len: int = None) -> np.ndarray:
+        """直接多步预测未来 pred_len 步"""
         if not self.is_fitted or self.model is None:
-            raise ValueError("模型未训练，请先训练模型")
+            raise ValueError("模型未训练")
 
-        if len(X.shape) == 1:
+        if pred_len is None:
+            pred_len = self.pred_len
+
+        if X.ndim == 1:
             X = X.reshape(-1, 1)
 
-        n_needed = self.seq_len
-        if len(X) < n_needed:
-            raise ValueError(f"需要至少 {n_needed} 个样本，当前只有 {len(X)} 个")
-
-        # 归一化
-        x_norm = (X - self.scaler_X_mean) / (self.scaler_X_std + 1e-8)
-
-        # 滑动窗口：每次滑 1 步
-        predictions = []
-        for i in range(len(x_norm) - n_needed + 1):
-            window = x_norm[i:i + n_needed]  # (seq_len, n_features)
-            window_t = torch.FloatTensor(window).unsqueeze(0).to(self.device)  # (1, seq_len, n_features)
-            with torch.no_grad():
-                pred_norm = self.model(window_t).cpu().numpy()[0]  # scalar
-            pred = pred_norm * self.scaler_y_std + self.scaler_y_mean
-            predictions.append(pred)
-
-        return np.array(predictions)
+        x_input = X[-self.seq_len:]
+        
+        x_tensor = torch.FloatTensor(x_input).unsqueeze(0).to(self.device)
+        
+        self.model.eval()
+        with torch.no_grad():
+            pred_norm = self.model(x_tensor).cpu().numpy()[0]
+        
+        # 反归一化
+        pred = pred_norm * self._target_std + self._target_mean
+        
+        return pred[:pred_len]
 
     def predict_future(self, X: np.ndarray, steps: int = 1) -> np.ndarray:
         """
-        滚动预测未来 steps 步（自回归）
-        用当前窗口预测下一步，然后将预测值加入窗口继续预测
-        X: (n_samples, n_features) 或 (n_samples,)，至少 seq_len 个样本
-        返回: (steps,) 预测的未来 steps 步
+        滚动预测未来 steps 步
+        使用直接多步预测 + 滑动窗口
         """
         if not self.is_fitted or self.model is None:
-            raise ValueError("模型未训练，请先训练模型")
+            raise ValueError("模型未训练")
 
-        # 统一 reshape 为 2D
-        original_1d = len(X.shape) == 1
+        original_1d = X.ndim == 1
         if original_1d:
             X = X.reshape(-1, 1)
 
-        n_features = X.shape[1]
-        predictions = []
-
-        # 初始化滑动窗口: (seq_len, n_features) numpy array
-        cur = X[-self.seq_len:].copy()  # float64, shape: (seq_len, n_features)
-
+        all_preds = []
+        
         for _ in range(steps):
-            # 归一化
-            x_norm = (cur - self.scaler_X_mean) / (self.scaler_X_std + 1e-8)
-            x_t = torch.FloatTensor(x_norm).unsqueeze(0).to(self.device)  # (1, seq_len, n_features)
-
+            x_input = X[-self.seq_len:]
+            x_tensor = torch.FloatTensor(x_input).unsqueeze(0).to(self.device)
+            
             self.model.eval()
             with torch.no_grad():
-                pred_norm = self.model(x_t).cpu().numpy()[0]  # scalar
+                pred_norm = self.model(x_tensor).cpu().numpy()[0]
+            
+            # 反归一化
+            pred = pred_norm * self._target_std + self._target_mean
+            
+            # 取第一步
+            next_val = float(pred[0])
+            all_preds.append(next_val)
+            
+            # 更新 X
+            X = np.vstack([X, [[next_val]]])
 
-            # 反归一化 - 使用 .item() 处理 0D numpy array
-            pred_raw = pred_norm * self.scaler_y_std + self.scaler_y_mean
-            if hasattr(pred_raw, 'item'):
-                pred = pred_raw.item()
-            else:
-                pred = float(pred_raw)
-            predictions.append(pred)
-
-            # 滑动窗口: 去掉第一行，追加预测值作为新行
-            new_row = np.full((1, n_features), pred, dtype=np.float64)
-            cur = np.vstack([cur[1:], new_row])
-
-        if original_1d:
-            return np.array(predictions).squeeze()
-        return np.array(predictions)
+        result = np.array(all_preds)
+        return result.squeeze() if original_1d and result.ndim > 1 else result
 
     def get_feature_importance(self) -> Dict[str, float]:
-        """1D-CNN 不直接支持特征重要性，返回空"""
         return {}
 
     def save_model(self, path: str):
         if self.model is None:
             raise ValueError("没有可保存的模型")
-
         torch.save({
             'model_state': self.model.state_dict(),
-            'scaler_X_mean': self.scaler_X_mean,
-            'scaler_X_std': self.scaler_X_std,
-            'scaler_y_mean': self.scaler_y_mean,
-            'scaler_y_std': self.scaler_y_std,
+            'target_mean': self._target_mean,
+            'target_std': self._target_std,
             'seq_len': self.seq_len,
+            'pred_len': self.pred_len,
             'n_features': self.n_features,
             'metrics': self.metrics,
-            'target_col': self.target_col
         }, path)
-        logger.info(f"CNN1D 模型已保存: {path}")
+        logger.info(f"CNN1D-V4 模型已保存: {path}")
 
     def load_model(self, path: str):
         data = torch.load(path, map_location=self.device)
-
-        self.scaler_X_mean = data['scaler_X_mean']
-        self.scaler_X_std = data['scaler_X_std']
-        self.scaler_y_mean = data['scaler_y_mean']
-        self.scaler_y_std = data['scaler_y_std']
+        
+        self._target_mean = float(data['target_mean'])
+        self._target_std = float(data['target_std'])
         self.seq_len = data['seq_len']
+        self.pred_len = data['pred_len']
         self.n_features = data['n_features']
         self.metrics = data.get('metrics', {})
-        self.target_col = data.get('target_col', '')
-
-        hidden_channels = self.metrics.get('hidden_channels', [32, 64, 128])
-        self.model = CNN1DModel(
+        
+        hidden_channels = self.metrics.get('hidden_channels', 128)
+        num_layers = self.metrics.get('num_layers', 3)
+        
+        self.model = CNN1DModelV4(
             input_size=self.n_features,
             hidden_channels=hidden_channels,
-            seq_len=self.seq_len
+            num_layers=num_layers,
+            seq_len=self.seq_len,
+            pred_len=self.pred_len
         ).to(self.device)
         self.model.load_state_dict(data['model_state'])
         self.model.eval()
-
+        
         self.is_fitted = True
-        logger.info(f"CNN1D 模型已加载: {path}")
+        logger.info(f"CNN1D-V4 模型已加载: {path}")

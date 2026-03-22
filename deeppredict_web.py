@@ -632,14 +632,17 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
 
 
 if __name__ == "__main__":
+    # Railway / HuggingFace Spaces 用 PORT 环境变量
+    import os
+    port = int(os.environ.get("PORT", 7860))
     print("=" * 60)
-    print("  DeepPredict Web 版 v1.02 已启动！")
-    print("  访问地址: http://localhost:7860")
+    print("  DeepPredict Web 版 v1.03 已启动！")
+    print(f"  访问地址: http://0.0.0.0:{port}")
     print("  同一局域网内的手机/电脑都可以访问")
     print("  按 Ctrl+C 停止")
     print("=" * 60)
     demo.launch(
         server_name="0.0.0.0",
-        server_port=7860,
+        server_port=port,
         show_error=True
     )

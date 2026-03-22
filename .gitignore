@@ -4,54 +4,52 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-*.egg-info/
 *.egg
-.eggs/
+*.egg-info/
+dist/
+build/
+*.whl
 
-# Virtual environments
-venv/
+# Virtual environment
 .venv/
-env/
-.env
+venv/
+ENV/
 
-# PyInstaller
-*.spec
-
-# IDEs
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
+# Debug & Test files
+debug*.py
+debug*.txt
+test*.py
+test*.txt
+benchmark*.py
+benchmark*.txt
+check_*.py
+fix_*.py
+exp_*.py
+*.log
+
+# Gradio
+gradio/**/cache/
+*.db
+
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
-logs/
-*.log
+# Backup
+*.bak
+*.backup
 
 # Windows
-*.lnk
+*.bat
+*.ps1
 
-# Build artifacts
-*.pyd
-*.dll
-*.exe
-
-# Model files (large, exclude from repo - users should generate their own)
-*.pkl
-*.pt
-*.pth
-*.onnx
-*.skill
-
-# CSV data files
-*.csv
-*.xlsx
-*.xls
-data/
+# Others
+__pycache__/
+*.tmp

@@ -1,85 +1,138 @@
-# DeepPredict v1.0
+# 🧠 DeepPredict - 零门槛深度学习预测工具
 
-> 低门槛深度学习预测工具 | 研究生友好版
+[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-## 功能特性
-
-- 📂 **CSV 数据导入** - 支持任意格式的 CSV 文件，自动识别列类型
-- 🎯 **可视化目标列选择** - 下拉菜单选择要预测的目标
-- 📝 **自然语言需求描述** - 用日常语言描述你的预测需求
-- 🤖 **自动模型适配** - 根据需求和数据特征自动选择最佳模型
-- 📈 **训练过程可视化** - 实时显示训练进度和日志
-- 🔮 **新数据预测** - 导入新数据直接输出预测结果
-- 💾 **模型保存加载** - 可复用训练好的模型
-
-## 快速开始
-
-### 1. 安装依赖
-
-```bash
-cd DeepPredict
-pip install -r requirements.txt
-```
-
-### 2. 运行应用
-
-```bash
-python main.py
-```
-
-## 使用流程
-
-1. **导入数据** - 点击「选择 CSV 文件」，加载你的数据
-2. **选择目标列** - 从下拉框中选择你要预测的列
-3. **描述需求** - 在文本框中描述你的预测需求，例如：
-   - "预测下个月的销售额"
-   - "判断用户是否会流失"
-   - "预测未来7天的访问量趋势"
-4. **开始训练** - 点击按钮，自动完成模型训练
-5. **查看结果** - 查看模型指标和特征重要性
-6. **保存模型** - 导出训练好的模型备用
-
-## 项目结构
-
-```
-DeepPredict/
-├── main.py                 # 主入口
-├── requirements.txt        # 依赖列表
-├── README.md              # 说明文档
-├── src/
-│   ├── core/
-│   │   ├── data_loader.py  # 数据加载
-│   │   └── task_router.py  # 任务路由
-│   ├── models/
-│   │   └── predictor.py    # 模型训练预测
-│   └── ui/
-│       └── main_window.py  # 主窗口UI
-├── assets/                 # 资源文件
-└── logs/                   # 日志目录
-```
-
-## 技术栈
-
-- **桌面框架**: PyQt5
-- **数据处理**: pandas, numpy
-- **机器学习**: scikit-learn
-- **图表**: matplotlib, pyqtgraph
-
-## 适用场景
-
-- 📊 销售预测
-- 👥 用户行为分析
-- 🔧 设备故障预测
-- 📈 趋势分析
-- 🏷️ 分类判断
-
-## 注意事项
-
-- v1.0 主要使用 scikit-learn 机器学习模型
-- 深度学习模型（LSTM等）将在后续版本中加入
-- 数据量较小（<100条）时建议选择简单模型
-- 特征较多（>50）时建议进行特征选择
+**无需编程基础，无需机器学习背景。** 上传 CSV，选择目标列，3 步完成 AI 预测。
 
 ---
 
-MIT License | 2026
+## ✨ 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| 🤖 **AI 自动选模型** | 系统自动分析数据，推荐最优模型（PatchTST / LSTM / GradientBoosting） |
+| 📊 **零代码操作** | 告别 Jupyter Notebook，点点鼠标完成预测 |
+| 🔒 **数据本地处理** | 数据不上传服务器，保护隐私安全 |
+| 📱 **支持手机访问** | 响应式设计，随时随地使用 |
+| 🚀 **快速出结果** | 几分钟内完成训练和预测 |
+
+---
+
+## 📥 安装
+
+### 环境要求
+- Python 3.8+
+- Windows / macOS / Linux
+
+### 安装步骤
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/xjhveteran199-bit/DeepPredict.git
+cd DeepPredict
+
+# 2. 创建虚拟环境（推荐）
+python -m venv .venv
+
+# 3. 激活虚拟环境
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
+
+# 4. 安装依赖
+pip install -r requirements.txt
+
+# 5. 启动 Web 版
+python deeppredict_web.py
+```
+
+安装完成后，打开浏览器访问：**http://localhost:7860**
+
+---
+
+## 🎯 使用方法
+
+### 1. 导入数据
+上传你的 CSV 文件，系统自动分析数据结构。
+
+### 2. 选择目标列
+选择你要预测的列（Y），系统根据数据情况推荐最优模型。
+
+### 3. 开始训练
+点击「开始训练」，等待几分钟查看预测结果。
+
+---
+
+## 📊 支持的模型
+
+| 模型 | 类型 | 适用场景 |
+|------|------|----------|
+| **PatchTST** | Transformer | 长序列时序预测（≥200条数据） |
+| **LSTM** | 深度学习 | 中短期时序预测（≥100条数据） |
+| **GradientBoosting** | 集成学习 | 分类任务、回归任务 |
+| **RandomForest** | 集成学习 | 分类任务、回归任务 |
+
+---
+
+## 💡 适用场景
+
+- 🧬 **生物医学**：细胞培养数据、药物反应预测
+- 📈 **市场分析**：销售预测、流量预测
+- 🌡️ **环境科学**：空气质量、气候变化预测
+- 🏭 **工业生产**：设备故障预测、质量控制
+- 📚 **学术研究**：时序数据分析与预测
+
+---
+
+## 🔧 目录结构
+
+```
+DeepPredict/
+├── deeppredict_web.py     # Web 界面主程序
+├── src/
+│   ├── models/            # 预测模型
+│   │   ├── patchtst_model.py    # PatchTST Transformer
+│   │   ├── lstm_model.py        # LSTM 模型
+│   │   └── ...
+│   └── core/              # 核心模块
+│       └── task_router.py       # 任务路由
+├── test_data/            # 测试数据
+├── requirements.txt      # 依赖列表
+└── README.md
+```
+
+---
+
+## 💰 定价
+
+| 版本 | 价格 | 说明 |
+|------|------|------|
+| 个人版 | **免费** | 适合学习和研究 |
+| 预测服务 | **¥5/次** | 单次预测，不限数据量 |
+| 批量服务 | **¥99/月** | 无限次预测 + 优先模型 |
+
+---
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+---
+
+## 📄 许可证
+
+本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+---
+
+## 📧 联系
+
+- **GitHub**: [xjhveteran199-bit/DeepPredict](https://github.com/xjhveteran199-bit/DeepPredict)
+- **邮箱**: contact@deeppredict.ai
+
+---
+
+*让 AI 预测触手可及*

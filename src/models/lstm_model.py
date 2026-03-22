@@ -90,6 +90,9 @@ class LSTMPredictor:
             
             X_seq, y_seq = self._create_sequences(X_norm, y_norm)
             
+            # 确保 y_seq 是 1D，避免后续 torch.FloatTensor 变成 (n,1) 导致 sklearn 维度警告
+            y_seq = np.asarray(y_seq).ravel()
+            
             split_idx = int(len(X_seq) * (1 - test_size))
             X_train, X_test = X_seq[:split_idx], X_seq[split_idx:]
             y_train, y_test = y_seq[:split_idx], y_seq[split_idx:]
@@ -169,31 +172,82 @@ class LSTMPredictor:
             return False, f"LSTM 训练失败: {str(e)}"
     
     def predict(self, X: np.ndarray) -> np.ndarray:
+        """预测下一步（单步），返回反归一化的原始尺度预测值"""
         if not self.is_fitted or self.model is None:
             raise ValueError("模型未训练，请先训练模型")
         
         self.model.eval()
         
+        # 用训练时的归一化参数（列均值/标准差）
+        # X: (n, n_features), y列用0占位
         data = np.column_stack([X, np.zeros(len(X))])
-        data_normalized = (data - self.scaler_mean) / self.scaler_std
+        data_norm = (data - self.scaler_mean) / self.scaler_std
+        X_norm = data_norm[:, :-1]  # 取特征部分
         
-        X_norm = data_normalized[:, :-1]
         X_seq, _ = self._create_sequences(X_norm, np.zeros(len(X_norm)))
         
         if len(X_seq) == 0:
-            raise ValueError("数据长度不足，无法创建预测序列（需要 > seq_len 条数据）")
+            # 单步预测：输入恰好是 seq_len 个点，无法滑动。
+            # 取最后 seq_len 个点作为唯一序列
+            X_seq = X_norm[-self.seq_len:].reshape(1, self.seq_len, X_norm.shape[1])
         
         X_t = torch.FloatTensor(X_seq).to(self.device)
         
         with torch.no_grad():
-            predictions = self.model(X_t).cpu().numpy()
+            preds_norm = self.model(X_t).cpu().numpy()  # (n_seq,)
         
-        pred_data = np.zeros((len(predictions), len(self.scaler_mean)))
-        pred_data[:, -1] = predictions
-        pred_denorm = pred_data * self.scaler_std + self.scaler_mean
+        # 反归一化：将归一化预测值转回原始尺度
+        # 用跟训练时完全相同的方式：把归一化pred放在y列，反归一化
+        pred_data = np.zeros((len(preds_norm), len(self.scaler_mean)))
+        pred_data[:, -1] = preds_norm
+        preds_denorm = pred_data * self.scaler_std + self.scaler_mean
         
-        return pred_denorm[:, -1]
-    
+        return preds_denorm[:, -1]  # 原始尺度预测值
+
+    def predict_future(self, X: np.ndarray, steps: int = 1) -> np.ndarray:
+        """
+        滚动预测未来 steps 步（自回归）
+        每次用 predict() 单步预测，返回的是原始尺度值，滚动过程中正确更新窗口
+        X: (n_samples,) 或 (n_samples, n_features)，至少 seq_len 个样本
+        返回: (steps,) 预测的未来 steps 步（原始尺度）
+        """
+        if not self.is_fitted or self.model is None:
+            raise ValueError("模型未训练，请先训练模型")
+
+        original_1d = len(X.shape) == 1
+        if original_1d:
+            X = X.reshape(-1, 1)
+
+        n_features = X.shape[1]
+        predictions = []
+        
+        # cur: 保持原始尺度，用于生成下一个窗口
+        cur = list(X[-self.seq_len:].astype(np.float64))  # list of (n_features,) arrays
+
+        for _ in range(steps):
+            # 构建输入：用 cur 最后 seq_len 个窗口（原始尺度）
+            x_input = np.array(cur[-self.seq_len:])  # (seq_len, n_features)
+            
+            # predict 返回原始尺度单步预测
+            preds = self.predict(x_input)  # (n_seq,) 这里 n_seq=1
+            
+            if len(preds) == 0:
+                break
+            
+            pred = float(preds[-1])  # 单步预测值（原始尺度）
+            predictions.append(pred)
+            
+            # 更新窗口：去掉最老的一个时间点，加入新预测值
+            # 如果是多特征，用 pred 替换最后一个特征（简化：假设 pred 对应第一个特征）
+            new_row = np.zeros(n_features, dtype=np.float64)
+            new_row[0] = pred
+            cur.append(new_row)
+
+        result = np.array(predictions)
+        if original_1d:
+            return result.squeeze()
+        return result
+
     def save_model(self, path: str):
         torch.save({
             'model_state': self.model.state_dict(),

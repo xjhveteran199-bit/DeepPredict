@@ -172,17 +172,16 @@ class PatchTST(nn.Module):
         # LayerNorm
         self.ln = nn.LayerNorm(d_model)
         
-        # 预测头：将每个patch的表示映射到预测值
-        # 方式：用最后一个patch的表示预测所有未来步
-        self.head = nn.Linear(d_model, pred_len)
-        
-        # 另一种头：利用所有patch的表示
-        self.head_fc = nn.Sequential(
-            nn.Linear(d_model, d_ff),
+        # 预测头：使用最后 n_pred 个 patch token 预测对应位置的未来步
+        # FIX v2: 不再直接用 CLS 一次性预测全部 48 步
+        # 改为：取最后 pred_len 个位置的 token 表示，预测对应偏移的未来步
+        # 实际上用 last_k 个 patch 映射到 pred_len
+        self.n_pred = min(pred_len, self.n_patches)
+        self.head_v2 = nn.Sequential(
+            nn.Linear(self.n_pred * d_model, d_ff),
             nn.GELU(),
             nn.Linear(d_ff, pred_len)
         )
-        
         self._init_weights()
     
     def _init_weights(self):
@@ -227,18 +226,25 @@ class PatchTST(nn.Module):
         
         x = self.ln(x)
         
-        # 取 CLS token 的表示来预测
-        cls_output = x[:, 0, :]  # (batch, d_model)
+        # 使用最后 n_pred 个 patch token 预测未来 pred_len 步
+        last_patches = x[:, -self.n_pred:, :]  # (batch, n_pred, d_model)
+        last_patches_flat = last_patches.flatten(start_dim=1)  # (batch, n_pred * d_model)
+        pred = self.head_v2(last_patches_flat)  # (batch, pred_len)
         
-        # 预测: (batch, pred_len)
-        pred = self.head_fc(cls_output)
+        # 扩展到 c_out 个目标变量: (batch, pred_len) -> (batch, pred_len, 1) -> (batch, pred_len, c_out)
+        pred = pred.unsqueeze(-1).expand(-1, -1, self.c_out)
         
-        # 扩展到 c_out 个目标变量
-        pred = pred.unsqueeze(-1).expand(-1, -1, self.c_out)  # (batch, pred_len, c_out)
-        
-        # RevIN 反归一化
-        if self.use_revin and self.revin is not None:
+        # RevIN 反归一化：
+        # 注意：当 c_in != c_out 时（如 c_in=5, c_out=1），RevIN 的统计量是针对输入的，
+        # 直接对输出做 denorm 会导致形状不匹配（广播错误）。因此只有 c_in == c_out 时才用 RevIN
+        if self.use_revin and self.revin is not None and self.c_in == self.c_out:
             pred = self.revin(pred, 'denorm')
+        else:
+            # 当 c_in != c_out 时，手动用 y 的归一化参数反归一化
+            # pred: (batch, pred_len, c_out) 其中 c_out=1
+            # 需要通过 self._target_mean/std 来反归一化，但这个信息在 Predictor 层，不在 Model 层
+            # 因此这里只做占位，让 Predictor 层再做处理
+            pass
         
         return pred
 
@@ -314,35 +320,71 @@ class PatchTSTPredictor:
             self.pred_len = pred_len
             self.patch_size = patch_size
             
-            # 处理数据维度
-            if len(X.shape) == 1:
+            # ========== 健壮输入处理 ==========
+            # 确保 X, y 都是 numpy 数组且为 2D
+            X = np.asarray(X, dtype=np.float32)
+            y = np.asarray(y, dtype=np.float32)
+            
+            if X.ndim == 1:
                 X = X.reshape(-1, 1)
-            if len(y.shape) == 1:
+            if y.ndim == 1:
                 y = y.reshape(-1, 1)
             
+            # 核心修复：以 y 为主对齐样本数（y 是要预测的目标）
+            # 如果 X 和 y 长度不一致，取两者交集范围
             n_samples = min(len(X), len(y))
             X = X[:n_samples]
             y = y[:n_samples]
             
+            # 展平 y 到 1D：y 可能是 (n, n_targets) 多列，但预测只需要单列目标
+            # 如果 y 仍有多列，取第一列作为目标（多目标预测暂不支持）
+            if y.shape[1] > 1:
+                logger.warning(f"y 有 {y.shape[1]} 列，只取第一列作为预测目标")
+                y = y[:, :1]
+            y = y.ravel()  # 确保是 1D: (n,)
+            
             n_features = X.shape[1]
-            n_targets = y.shape[1] if len(y.shape) > 1 else 1
+            n_targets = 1
             self.n_features = n_features
             
-            # 归一化
+            # ========== 自动调整窗口参数 ==========
+            # 当数据不足以支持请求的 seq_len/pred_len 时，自动缩小
+            min_window = seq_len + pred_len
+            if n_samples < min_window:
+                # 均匀分割：小数据集用小窗口
+                auto_seq = max(4, n_samples // 4)
+                auto_pred = max(1, n_samples - auto_seq - max(10, n_samples // 10))
+                seq_len = auto_seq
+                pred_len = auto_pred
+                self.seq_len = seq_len
+                self.pred_len = pred_len
+            
+            min_window = seq_len + pred_len
+            if n_samples < min_window + 50:
+                return False, (
+                    f"数据不足：{n_samples} 条样本不足以进行训练。"
+                    f"请至少准备 {min_window + 50} 条数据，或减少 seq_len/pred_len。"
+                )
+            
+            # 归一化（分别对 X 和 y）
             X_norm, self.scaler_mean, self.scaler_std = self._normalize(X)
             y_norm, self._target_mean, self._target_std = self._normalize(y)
             
-            # 构建训练数据：滑动窗口
+            # ========== 构建滑动窗口 ==========
+            # X_seqs[i]: X_norm[i-seq_len : i]  → shape (seq_len, n_features)
+            # y_seqs[i]: y_norm[i : i+pred_len] → shape (pred_len, n_targets)
+            # 起点从 seq_len 开始，终点截止 n_samples - pred_len
             X_seqs, y_seqs = [], []
-            for i in range(seq_len, n_samples - pred_len):
-                X_seqs.append(X_norm[i - seq_len:i])
-                y_seqs.append(y_norm[i:i + pred_len])
+            for i in range(seq_len, n_samples - pred_len + 1):
+                X_seqs.append(X_norm[i - seq_len:i])          # (seq_len, n_features)
+                y_seqs.append(y_norm[i:i + pred_len].reshape(-1, 1))  # (pred_len, 1)
             
-            if len(X_seqs) < 50:
-                return False, f"数据不足：只有{len(X_seqs)}个训练样本，需要至少50个。请增加数据量或减少seq_len/pred_len。"
+            n_seqs = len(X_seqs)
+            if n_seqs < 10:
+                return False, f"滑动窗口产生样本不足：{n_seqs} 个序列（数据 {n_samples} / seq_len {seq_len} / pred_len {pred_len}）。请减少 seq_len 或 pred_len。"
             
-            X_tensor = torch.FloatTensor(np.array(X_seqs))
-            y_tensor = torch.FloatTensor(np.array(y_seqs))
+            X_tensor = torch.FloatTensor(np.array(X_seqs))   # (n_seqs, seq_len, n_features)
+            y_tensor = torch.FloatTensor(np.array(y_seqs))    # (n_seqs, pred_len, n_targets)
             
             # 划分训练/测试
             split_idx = int(len(X_tensor) * (1 - test_size))
@@ -509,7 +551,44 @@ class PatchTSTPredictor:
     def get_feature_importance(self) -> Dict[str, float]:
         """Transformer不直接支持特征重要性，返回空"""
         return {}
-    
+
+    def predict_future(self, X: np.ndarray, steps: int = 1) -> np.ndarray:
+        """
+        滚动预测未来 steps 步
+        PatchTST 原生支持多步预测，直接调用 predict 即可
+        X: (n_samples,) 或 (n_samples, n_features)，至少 seq_len 个样本
+        返回: (steps,) 预测的未来 steps 步
+        """
+        if not self.is_fitted or self.model is None:
+            raise ValueError("模型未训练，请先训练模型")
+
+        # PatchTST 的 predict 已经支持多步预测
+        # 但如果 steps > pred_len，需要分批预测
+        max_pred = self.pred_len
+        all_preds = []
+
+        remaining = steps
+        x_cur = X.copy() if isinstance(X, np.ndarray) else np.array(X)
+
+        while remaining > 0:
+            this_pred = min(remaining, max_pred)
+            preds = self.predict(x_cur, pred_len=this_pred)
+            # 取最后 this_pred 个预测
+            preds = preds[:this_pred]
+            all_preds.extend(preds)
+
+            # 更新 x_cur：将预测值加到序列末尾
+            if remaining > this_pred:
+                # 需要把预测值作为新的输入继续预测
+                if len(x_cur.shape) == 1:
+                    x_cur = np.concatenate([x_cur[this_pred:], preds])
+                else:
+                    x_cur = np.vstack([x_cur[this_pred:], preds.reshape(1, -1)])
+
+            remaining -= this_pred
+
+        return np.array(all_preds[:steps])
+
     def save_model(self, path: str):
         """保存模型"""
         if self.model is None:

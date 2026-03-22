@@ -87,6 +87,23 @@ class TaskRouter:
             }
         },
         'time_series': {
+            'CNN1D': {
+                'model': 'CNN1D',
+                'params': {
+                    'seq_len': 100,
+                    'hidden_channels': [32, 64, 128],
+                    'kernel_size': 3,
+                    'epochs': 50,
+                    'batch_size': 32,
+                    'learning_rate': 0.001,
+                },
+                '适用': '⭐ CNN时序预测，擅 长局部特征提取，适合传感器信号'
+            },
+            'LSTM': {
+                'model': 'LSTM',
+                'params': {'hidden_size': 64, 'num_layers': 2, 'epochs': 50, 'batch_size': 32, 'seq_len': 30, 'learning_rate': 0.001},
+                '适用': '深度学习时序预测，效果较好'
+            },
             'PatchTST': {
                 'model': 'PatchTST',
                 'params': {
@@ -101,12 +118,7 @@ class TaskRouter:
                     'batch_size': 32,
                     'learning_rate': 0.0005,
                 },
-                '适用': '⭐ Transformer时序预测，效果最强，适合长序列'
-            },
-            'LSTM': {
-                'model': 'LSTM',
-                'params': {'hidden_size': 64, 'num_layers': 2, 'epochs': 50, 'batch_size': 32, 'seq_len': 10, 'learning_rate': 0.001},
-                '适用': '深度学习时序预测，效果较好'
+                '适用': 'Transformer时序预测，适合长序列'
             },
             'GradientBoosting': {
                 'model': 'sklearn.ensemble.GradientBoostingRegressor',
@@ -117,6 +129,18 @@ class TaskRouter:
                 'model': 'sklearn.ensemble.RandomForestRegressor',
                 'params': {'n_estimators': 100, 'max_depth': 10, 'random_state': 42},
                 '适用': '时序预测，稳健'
+            }
+        },
+        'decouple': {
+            'FastICA': {
+                'model': 'FastICA',
+                'params': {'n_components': None, 'max_iter': 500},
+                '适用': '线性解耦，适合多通道混合信号分离'
+            },
+            'AutoEncoder': {
+                'model': 'AutoEncoder',
+                'params': {'hidden_dim': 64, 'latent_dim': None, 'epochs': 50, 'seg_len': 100},
+                '适用': '非线性解耦，适合复杂混合信号'
             }
         }
     }
@@ -177,15 +201,17 @@ class TaskRouter:
         """选择最佳模型"""
         models = self.MODEL_POOL.get(task_type, self.MODEL_POOL['regression'])
         
-        # 时序任务：数据量足够（>=200）优先 PatchTST，其次 LSTM
+        # 时序任务：数据量足够（>=200）优先 CNN1D 或 LSTM
         if task_type == 'time_series':
             shape = data_info.get('shape', (0, 0))
             data_size = shape[0] if shape else 0
             
-            if data_size >= 200 and 'PatchTST' in models:
-                return 'PatchTST', models['PatchTST']['params']
+            if data_size >= 200 and 'CNN1D' in models:
+                return 'CNN1D', models['CNN1D']['params']
             elif data_size >= 100 and 'LSTM' in models:
                 return 'LSTM', models['LSTM']['params']
+            elif data_size >= 200 and 'PatchTST' in models:
+                return 'PatchTST', models['PatchTST']['params']
             elif 'GradientBoosting' in models:
                 return 'GradientBoosting', models['GradientBoosting']['params']
             elif 'RandomForest' in models:

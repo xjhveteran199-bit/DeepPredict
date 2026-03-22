@@ -4,8 +4,8 @@ DeepPredict Web - 积分系统核心逻辑
 
 import secrets
 from datetime import datetime
-from .database import User, CreditTransaction, Session
-from .integrations.stripe_integration import FREE_CREDITS_SIGNUP
+from web.backend.models.database import User, CreditTransaction, Session
+from web.backend.integrations.stripe_integration import FREE_CREDITS_SIGNUP
 
 
 def generate_api_key() -> str:

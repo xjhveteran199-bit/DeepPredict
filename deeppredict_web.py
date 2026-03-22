@@ -1,5 +1,5 @@
 """
-DeepPredict Web 版 - Gradio 界面 v1.02
+DeepPredict Web 版 - Gradio 界面 v1.03
 改进：智能数据分析 + 用户引导
 """
 
@@ -354,8 +354,14 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                 with gr.Column(scale=1):
                     gr.Markdown("### 🎯 任务配置")
                     
+                    feature_col = gr.Dropdown(
+                        label="① 选择特征列 X（自变量/时间列，可选）",
+                        choices=[],
+                        info="选择作为时间轴或自变量的列（如日期、序号），不选则自动用行号"
+                    )
+                    
                     target_col = gr.Dropdown(
-                        label="① 选择目标列 Y（要预测什么）",
+                        label="② 选择目标列 Y（要预测什么）",
                         choices=[],
                         info="选择你要预测的目标变量"
                     )
@@ -363,12 +369,12 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                     predict_mode = gr.Radio(
                         choices=["单变量时序（推荐）", "多变量预测"],
                         value="单变量时序（推荐）",
-                        label="② 预测模式",
+                        label="③ 预测模式",
                         info="时序数据用单变量，分类/回归可用多变量"
                     )
                     
                     model_select = gr.Dropdown(
-                        label="③ 选择模型",
+                        label="④ 选择模型",
                         choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"],
                         value="自动推荐",
                         info="自动推荐会根据数据情况选择最优模型"
@@ -376,7 +382,7 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                     model_recommend = gr.Markdown("")
                     
                     requirement = gr.Textbox(
-                        label="④ 描述需求（可选）",
+                        label="⑤ 描述需求（可选）",
                         placeholder="示例：预测K值变化趋势\n预测Glu未来走势\n判断是否流失",
                         lines=2
                     )
@@ -415,7 +421,14 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
         lstm_pred = None
         
         if file is None:
-            return None, "**请上传 CSV 文件**", "**上传数据后自动分析**", gr.update(choices=[]), "**推荐模型**：上传数据后自动推荐", gr.update(choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"], value="自动推荐")
+            return [None] * 6 + [
+                "**请上传 CSV 文件**",
+                "**上传数据后自动分析**",
+                gr.update(choices=[]),
+                gr.update(choices=[]),
+                "**推荐模型**：上传数据后自动推荐",
+                gr.update(choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"], value="自动推荐")
+            ]
         
         file_path = file.name
         success, msg = data_loader.load_csv(file_path)
@@ -425,7 +438,6 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
             info = data_loader.get_info()
             structure_info = data_loader.get_structure_explanation()
             
-            # 根据数据推荐模型
             data_size = data_loader.df.shape[0]
             data_type = data_loader.data_structure['type'] if data_loader.data_structure else 'unknown'
             
@@ -445,23 +457,41 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                 recommend = "**推荐模型**：GradientBoosting（数据量较小或非时序任务）"
                 recommend_value = "GradientBoosting"
             
+            # 所有列（X 可选，包括日期和数值）
+            all_cols = list(data_loader.df.columns)
+            # 仅数值列（Y 必须数值）
             numeric_cols = list(data_loader.df.select_dtypes(include=['number']).columns)
-            return (
+            # 默认 X：尝试找日期/时间列
+            default_x = None
+            for col in all_cols:
+                if any(kw in col.lower() for kw in ['date', 'time', '日期', '时间', 'timestamp', 'day', 'month', '年', '月', '日']):
+                    default_x = col
+                    break
+            # 默认 Y：第一个数值列
+            default_y = numeric_cols[0] if numeric_cols else None
+            
+            return [
                 preview, info, structure_info,
-                gr.update(choices=numeric_cols, value=numeric_cols[0] if numeric_cols else None),
+                gr.update(choices=all_cols, value=default_x),
+                gr.update(choices=numeric_cols, value=default_y),
                 recommend,
                 gr.update(choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"], value=recommend_value)
-            )
-        return None, msg, "**上传失败**", gr.update(choices=[]), "**推荐模型**：上传失败", gr.update(choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"], value="自动推荐")
+            ]
+        return [None, msg, "**上传失败**"] + [
+            gr.update(choices=[]),
+            gr.update(choices=[]),
+            "**推荐模型**：上传失败",
+            gr.update(choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"], value="自动推荐")
+        ]
     
-    def on_train(target_col, predict_mode, model_select, requirement, prog=gr.Progress()):
+    def on_train(feature_col, target_col, predict_mode, model_select, requirement, prog=gr.Progress()):
         global predictor, lstm_pred
         
         if data_loader.df is None:
             return "❌ 请先上传数据", "", ""
         
         if not target_col:
-            return "❌ 请选择目标列", "", ""
+            return "❌ 请选择目标列 Y", "", ""
         
         prog(0.1, desc="解析任务...")
         
@@ -493,25 +523,42 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
         if target_col not in numeric_cols:
             return f"❌ 目标列 [{target_col}] 不是数值列", "", ""
         
-        # 根据预测模式和数据结构决定特征使用方式
+        # 根据预测模式决定数据准备方式
         data_type = data_loader.data_structure['type'] if data_loader.data_structure else 'unknown'
         use_univariate = (predict_mode == "单变量时序（推荐）") or (data_type == 'single_variable')
         
         if use_univariate:
-            # 单变量模式：用目标列自己的历史值
-            X = data_loader.df[target_col].values.astype(np.float32)
+            # 单变量时序：用 Y 自己的历史值预测未来
             y = data_loader.df[target_col].values.astype(np.float32)
-            feature_cols_used = "（无，使用自身历史值）"
+            if feature_col and feature_col in data_loader.df.columns:
+                # 用户指定了 X 时间轴：按 X 排序后做预测
+                x_raw = data_loader.df[feature_col].values
+                try:
+                    # 尝试转为数值排序
+                    x_numeric = pd.to_numeric(pd.Series(x_raw), errors='coerce').fillna(0).values.astype(np.float32)
+                    sort_idx = np.argsort(x_numeric)
+                    y = y[sort_idx]
+                    feature_cols_used = f"X={feature_col}（用户指定时间轴）"
+                except Exception:
+                    y = data_loader.df[target_col].values.astype(np.float32)
+                    feature_cols_used = "（X列无法排序，使用行号）"
+            else:
+                # 未指定 X：用行号（默认行为）
+                feature_cols_used = "（无，自变量使用行号）"
+            # X 在这里只用于排序，模型只接收 y
+            X_for_model = y  # 单变量：X=y
         else:
-            # 多变量模式：用其他数值列作为特征
+            # 多变量模式：用其他数值列作为特征（X 列也可以参与）
             feature_cols = [c for c in numeric_cols if c != target_col]
+            if feature_col and feature_col in numeric_cols and feature_col != target_col:
+                # 用户指定的 X 也作为特征加入
+                feature_cols = [feature_col] + [c for c in feature_cols if c != feature_col]
             if not feature_cols:
                 # 没有其他特征列，退化为单变量
-                X = data_loader.df[target_col].values.astype(np.float32)
-                y = data_loader.df[target_col].values.astype(np.float32)
+                X_for_model = y = data_loader.df[target_col].values.astype(np.float32)
                 feature_cols_used = "（无，使用自身历史值）"
             else:
-                X = data_loader.df[feature_cols].values.astype(np.float32)
+                X_for_model = data_loader.df[feature_cols].values.astype(np.float32)
                 y = data_loader.df[target_col].values.astype(np.float32)
                 feature_cols_used = str(feature_cols)
         
@@ -522,7 +569,7 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                 from src.models.patchtst_model import PatchTSTPredictor
                 lstm_pred = PatchTSTPredictor()
                 success, msg = lstm_pred.train(
-                    X, y,
+                    X_for_model, y,
                     seq_len=params.get('seq_len', 96),
                     pred_len=params.get('pred_len', 96),
                     patch_size=params.get('patch_size', 16),
@@ -545,7 +592,7 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                 from src.models.lstm_model import LSTMPredictor
                 lstm_pred = LSTMPredictor()
                 success, msg = lstm_pred.train(
-                    X, y,
+                    X_for_model, y,
                     seq_len=params.get('seq_len', 10),
                     hidden_size=params.get('hidden_size', 64),
                     num_layers=params.get('num_layers', 2),
@@ -581,7 +628,8 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
         config = (
             f"**任务类型**：{task_type}\n"
             f"**模型**：{model_name}\n"
-            f"**目标列**：{target_col}\n"
+            f"**自变量 X**：{feature_col or '（行号）'}\n"
+            f"**因变量 Y**：{target_col}\n"
             f"**特征列**：{feature_cols_used}\n"
             f"**参数**：{params}"
         )
@@ -626,8 +674,16 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
         return "✅ 预测完成", table
     
     # 绑定事件
-    file_input.change(on_file_upload, inputs=[file_input], outputs=[data_preview, data_info, data_structure_info, target_col, model_recommend, model_select])
-    train_btn.click(on_train, inputs=[target_col, predict_mode, model_select, requirement], outputs=[result_out, config_out, importance_out])
+    file_input.change(
+        on_file_upload,
+        inputs=[file_input],
+        outputs=[data_preview, data_info, data_structure_info, feature_col, target_col, model_recommend, model_select]
+    )
+    train_btn.click(
+        on_train,
+        inputs=[feature_col, target_col, predict_mode, model_select, requirement],
+        outputs=[result_out, config_out, importance_out]
+    )
     predict_btn.click(on_predict, inputs=[predict_file], outputs=[predict_status, predict_out])
 
 

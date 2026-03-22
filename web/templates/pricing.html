@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>选择支付方式 - DeepPredict</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', -apple-system, sans-serif; background: #0D0D0F; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .card { background: #141418; border: 1px solid rgba(255,255,255,0.08); border-radius: 20px; padding: 40px; max-width: 520px; width: 100%; }
+        h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
+        .sub { color: #8A8A96; font-size: 14px; margin-bottom: 32px; }
+        .amount-display { background: #1C1C22; border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 24px; }
+        .amount-display .label { font-size: 13px; color: #8A8A96; margin-bottom: 8px; }
+        .amount-display .amount { font-size: 48px; font-weight: 800; color: #FF6B2B; }
+        .amount-display .credits { font-size: 15px; color: #8A8A96; margin-top: 4px; }
+        .qr-section { text-align: center; margin-bottom: 24px; }
+        .qr-section img { width: 220px; height: 220px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); }
+        .qr-section .hint { font-size: 13px; color: #8A8A96; margin-top: 12px; }
+        .steps { background: #1C1C22; border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+        .steps h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #8A8A96; }
+        .step { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 10px; font-size: 14px; }
+        .step-num { width: 22px; height: 22px; background: rgba(255,107,43,0.15); color: #FF6B2B; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+        .step span { color: #8A8A96; }
+        .step strong { color: #fff; }
+        .notice { background: rgba(255,107,43,0.08); border: 1px solid rgba(255,107,43,0.2); border-radius: 10px; padding: 14px; font-size: 13px; color: #8A8A96; margin-bottom: 24px; }
+        .notice strong { color: #FF6B2B; }
+        a.back { display: inline-block; color: #8A8A96; text-decoration: none; font-size: 14px; }
+        a.back:hover { color: #fff; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <a href="/" class="back">← 返回首页</a>
+        <h1 style="margin-top:16px;">购买积分</h1>
+        <p class="sub" id="product-desc">扫码支付，积分自动到账</p>
+
+        <div class="amount-display">
+            <div class="label">支付金额</div>
+            <div class="amount" id="display-amount">¥7</div>
+            <div class="credits" id="display-credits">获得 100 积分</div>
+        </div>
+
+        <div class="qr-section">
+            <!-- 替换为你的支付宝收款码图片 -->
+            <img src="/static/alipay_qr.png" alt="支付宝收款码" 
+                 onerror="thisouterHTML='<div style=\'width:220px;height:220px;background:#1C1C22;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#8A8A96;font-size:14px;text-align:center;padding:20px;\'>请上传<br>alipay_qr.png<br>到 web/static/ 目录</div>'">
+            <div class="hint">打开支付宝扫码支付</div>
+        </div>
+
+        <div class="steps">
+            <h3>支付后如何到账？</h3>
+            <div class="step">
+                <div class="step-num">1</div>
+                <div>用支付宝 <strong>扫描上方二维码</strong> 支付</div>
+            </div>
+            <div class="step">
+                <div class="step-num">2</div>
+                <div>支付完成后，<strong>截图保存</strong> 你的支付凭证</div>
+            </div>
+            <div class="step">
+                <div class="step-num">3</div>
+                <div>联系客服（微信/邮箱）<strong>提交截图</strong>，积分会在 24 小时内到账</div>
+            </div>
+        </div>
+
+        <div class="notice">
+            💬 有问题？联系微信：<strong>deeppredict</strong> 或邮箱 <strong>contact@deeppredict.ai</strong>
+        </div>
+
+        <a href="/" class="back">← 返回首页</a>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const product = params.get('product'); // credits_100 / credits_500 / credits_1000
+        const prices = {
+            'credits_100': { amount: 7, credits: 100, label: '100 积分' },
+            'credits_500': { amount: 28, credits: 500, label: '500 积分' },
+            'credits_1000': { amount: 49, credits: 1000, label: '1000 积分' }
+        };
+        if (product && prices[product]) {
+            document.getElementById('display-amount').textContent = '¥' + prices[product].amount;
+            document.getElementById('display-credits').textContent = '获得 ' + prices[product].credits + ' 积分';
+        }
+    </script>
+</body>
+</html>

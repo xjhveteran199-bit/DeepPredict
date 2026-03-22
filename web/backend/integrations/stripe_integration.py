@@ -64,7 +64,7 @@ def create_checkout_session(
         raise ValueError(f"Product {product_key} not configured: missing stripe_price_id")
 
     # 检查是否已有 Stripe customer，没有则创建
-    from .database import User, Session
+    from web.backend.models.database import User, Session
     with Session() as session:
         user = session.query(User).filter(User.api_key == user_api_key).first()
         if not user:

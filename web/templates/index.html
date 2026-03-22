@@ -309,11 +309,10 @@
             font-weight: 800;
             margin-bottom: 4px;
         }
-        .price-card .price span { font-size: 16px; font-weight: 500; color: var(--gray-light); }
-        .price-card .price .credits {
-            font-size: 14px;
+        .price-card .price small {
+            font-size: 16px;
+            font-weight: 500;
             color: var(--gray-light);
-            font-weight: 400;
         }
         .price-card .desc {
             font-size: 13px;
@@ -642,14 +641,19 @@
             { key: 'credits_500', popular: true },
             { key: 'credits_1000', popular: false }
         ];
+        // 支付宝定价（人民币）
+        const cnyPrices = {
+            'credits_100': { name: '100 积分', credits: 100, price: '¥7', description: '适合个人学习', badge: '' },
+            'credits_500': { name: '500 积分', credits: 500, price: '¥28', description: '9折优惠，适合研究', badge: '最受欢迎' },
+            'credits_1000': { name: '1000 积分', credits: 1000, price: '¥49', description: '7折大幅优惠', badge: '超值' }
+        };
         grid.innerHTML = tiers.map(t => {
-            const p = data[t.key];
-            if (!p) return '';
+            const p = cnyPrices[t.key];
             return `
             <div class="price-card ${t.popular ? 'popular' : ''}">
                 ${p.badge ? `<span class="badge">${p.badge}</span>` : ''}
                 <div class="name">${p.name}</div>
-                <div class="price">$${p.price_usd}<span>USD</span></div>
+                <div class="price">${p.price}</div>
                 <div class="credits">${p.credits} 积分</div>
                 <div class="desc">${p.description}</div>
                 <ul class="features-list">
@@ -659,7 +663,7 @@
                     <li>优先技术支持</li>
                 </ul>
                 ${currentUser ? 
-                    `<button class="btn ${t.popular ? 'btn-primary' : 'btn-outline'}" onclick="buyCredits('${t.key}')">立即购买</button>` :
+                    `<button class="btn ${t.popular ? 'btn-primary' : 'btn-outline'}" onclick="buyCredits('${t.key}')">扫码购买</button>` :
                     `<button class="btn ${t.popular ? 'btn-primary' : 'btn-outline'}" onclick="showAuth()">注册后购买</button>`
                 }
             </div>`;
@@ -788,22 +792,8 @@
 
     async function buyCredits(productKey) {
         if (!currentUser) { showRegister(); return; }
-        try {
-            const res = await fetch(`${API_BASE}/checkout`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-API-Key': currentUser.api_key
-                },
-                body: JSON.stringify({ product_key: productKey })
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || '创建订单失败');
-            // 跳转到 Stripe Checkout
-            window.location.href = data.checkout_url;
-        } catch(err) {
-            alert('购买失败: ' + err.message);
-        }
+        // 跳转到支付宝收款页
+        window.location.href = `/pricing?product=${productKey}`;
     }
 
     // ====== 初始化 ======

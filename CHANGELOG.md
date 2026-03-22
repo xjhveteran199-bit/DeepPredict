@@ -1,32 +1,27 @@
-# Changelog
+# 更新日志 / Changelog
 
-All notable changes to DeepPredict will be documented in this file.
+## v1.03 — 2026-03-23
 
-## [1.0.0] - 2026-03-21
+### 新增
+- **X 自变量选择**：用户上传 CSV 后可自主选择 X 列（时间/自变量列）和 Y 列（目标列）
+- **支付宝收款系统**：国内用户可扫码购买积分，无需 Stripe
+- **积分系统**：注册送 100 积分，按次扣积分（PatchTST 20分 / LSTM 15分 / GradientBoosting 5分）
+- **FastAPI 后端**：`/api/*` REST 接口，含用户管理、积分、支付、Webhook
+- **NanoBnana 风格首页**：暗色科技风，定价 ¥7 / ¥28 / ¥49
+- **Docker 部署支持**：Dockerfile + docker-compose，一键部署
 
-### Added
-- PyQt5 桌面应用主界面
-- CSV 数据导入与预览
-- 自然语言需求描述解析
-- 自动任务类型识别（回归/分类/时序）
-- 自动模型适配（LSTM/GradientBoosting/RandomForest/XGBoost）
-- LSTM 深度学习时序预测（PyTorch）
-- 训练指标评估（R²/RMSE/MAE/准确率/F1）
-- 特征重要性分析
-- 模型保存与加载
-- Windows 单文件 exe 打包（PyInstaller）
-- 桌面快捷方式自动创建
+### 修复
+- LSTM predict_future 参数名修正（`n_future` → `steps`）
+- CNN1D 小数据集保护（seq_len < 16 时自动调整）
+- 模块 import 路径问题
 
-### Features
-- 拖拽式 CSV 导入
-- 实时训练日志显示
-- 预测结果表格展示
-- 特征重要性 Top10 展示
+### 变更
+- Gradio 界面步骤编号更新：① X列 → ② Y列 → ③ 模式 → ④ 模型 → ⑤ 需求描述
 
-### Technical Stack
-- PyQt5 (GUI)
-- pandas + numpy (Data Processing)
-- scikit-learn (Machine Learning)
-- PyTorch (Deep Learning - LSTM)
-- matplotlib + pyqtgraph (Visualization)
-- PyInstaller (Packaging)
+---
+
+## v1.02 — 2026-03-22
+
+- 初始版本
+- 支持 PatchTST / LSTM / GradientBoosting / RandomForest
+- 智能数据分析 + 自动模型推荐

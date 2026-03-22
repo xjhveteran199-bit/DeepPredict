@@ -17,8 +17,8 @@ from fastapi.routing import APIRoute
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
-# 路径
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 路径（相对于运行目录，而非当前文件位置）
+BASE_DIR = os.path.abspath(os.getcwd())  # 运行目录
 sys.path.insert(0, BASE_DIR)
 
 load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -93,6 +93,11 @@ async def serve_app():
 @app.get("/success")
 async def payment_success():
     return templates.TemplateResponse("success.html", {"request": {}})
+
+
+@app.get("/pricing")
+async def serve_pricing():
+    return FileResponse(os.path.join(BASE_DIR, "web", "templates", "pricing.html"))
 
 
 # ====== API 路由 ======

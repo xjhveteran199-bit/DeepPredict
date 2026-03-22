@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 # ============ 核心模块 ============
 
+from src.data.data_decoupler import DataDecoupler
+
 class DataLoader:
     def __init__(self):
         self.df = None
@@ -289,6 +291,7 @@ class SklearnPredictor:
 
 # ============ 全局状态 ============
 data_loader = DataLoader()
+data_decoupler = None  # 数据解耦器
 task_router = TaskRouter()
 predictor = None
 lstm_pred = None
@@ -367,6 +370,9 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                     gr.Markdown("### 🔍 数据结构分析")
                     data_structure_info = gr.Markdown("**上传数据后自动分析...**")
                     
+                    gr.Markdown("### 🔬 数据解耦")
+                    data_decouple_info = gr.Markdown("**上传后自动识别列类型...**")
+                    
                     gr.Markdown("### 📈 数据摘要")
                     data_info = gr.Markdown("**上传数据后显示摘要**")
             
@@ -398,7 +404,7 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                     
                     model_select = gr.Dropdown(
                         label="④ 选择模型",
-                        choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"],
+                        choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"],
                         value="自动推荐",
                         info="自动推荐会根据数据情况选择最优模型"
                     )
@@ -455,18 +461,20 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
     # ========== 事件处理 ==========
     
     def on_file_upload(file):
-        global data_loader, predictor, lstm_pred
+        global data_loader, predictor, lstm_pred, data_decoupler
         predictor = None
         lstm_pred = None
+        data_decoupler = None
         
         if file is None:
-            return [None] * 6 + [
+            return [None] * 7 + [
                 "**请上传 CSV 文件**",
                 "**上传数据后自动分析**",
+                "**上传后自动识别列类型**",
                 gr.update(choices=[]),
                 gr.update(choices=[]),
                 "**推荐模型**：上传数据后自动推荐",
-                gr.update(choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"], value="自动推荐")
+                gr.update(choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"], value="自动推荐")
             ]
         
         file_path = file.name
@@ -476,6 +484,17 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
             preview = data_loader.df.head(20).to_html(max_cols=10, classes='table table-striped')
             info = data_loader.get_info()
             structure_info = data_loader.get_structure_explanation()
+            
+            # 数据解耦
+            decouple_info = "无数值列，无需解耦"
+            if data_loader.numeric_cols:
+                try:
+                    data_decoupler = DataDecoupler()
+                    default_y = data_loader.numeric_cols[0]
+                    data_decoupler.fit(data_loader.df, target_col=default_y)
+                    decouple_info = data_decoupler.get_summary()
+                except Exception as e:
+                    decouple_info = f"解耦分析失败：{str(e)[:80]}"
             
             data_size = data_loader.df.shape[0]
             data_type = data_loader.data_structure['type'] if data_loader.data_structure else 'unknown'
@@ -487,50 +506,48 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
                 recommend = "**推荐模型**：LSTM（单变量时序，100-200条数据）"
                 recommend_value = "LSTM"
             elif data_type in ['grouped_time_series', 'multi_variable'] and data_size >= 200:
-                recommend = "**推荐模型**：PatchTST（多变量时序，≥200条数据）"
-                recommend_value = "PatchTST"
+                recommend = "**推荐模型**：EnhancedCNN1D（多变量/复杂数据，推荐）"
+                recommend_value = "EnhancedCNN1D"
             elif data_type in ['grouped_time_series', 'multi_variable'] and data_size >= 100:
-                recommend = "**推荐模型**：LSTM（多变量时序，100-200条数据）"
-                recommend_value = "LSTM"
+                recommend = "**推荐模型**：EnhancedCNN1D（多变量，k=3/5/7多尺度卷积）"
+                recommend_value = "EnhancedCNN1D"
             else:
                 recommend = "**推荐模型**：GradientBoosting（数据量较小或非时序任务）"
                 recommend_value = "GradientBoosting"
             
-            # 所有列（X 可选，包括日期和数值）
             all_cols = list(data_loader.df.columns)
-            # 仅数值列（Y 必须数值）
             numeric_cols = list(data_loader.df.select_dtypes(include=['number']).columns)
-            # 默认 X：尝试找日期/时间列
             default_x = None
             for col in all_cols:
                 if any(kw in col.lower() for kw in ['date', 'time', '日期', '时间', 'timestamp', 'day', 'month', '年', '月', '日']):
                     default_x = col
                     break
-            # 默认 Y：第一个数值列
             default_y = numeric_cols[0] if numeric_cols else None
             
             return [
                 preview, info, structure_info,
+                decouple_info,
                 gr.update(choices=all_cols, value=default_x),
                 gr.update(choices=numeric_cols, value=default_y),
                 recommend,
-                gr.update(choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"], value=recommend_value)
+                gr.update(choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"], value=recommend_value)
             ]
         return [None, msg, "**上传失败**"] + [
+            "**上传失败**",
             gr.update(choices=[]),
             gr.update(choices=[]),
             "**推荐模型**：上传失败",
-            gr.update(choices=["自动推荐", "PatchTST", "LSTM", "GradientBoosting", "RandomForest"], value="自动推荐")
+            gr.update(choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"], value="自动推荐")
         ]
     
     def on_train(feature_col, target_col, predict_mode, model_select, requirement, n_future, prog=gr.Progress()):
         global predictor, lstm_pred
         
         if data_loader.df is None:
-            return "❌ 请先上传数据", "", ""
+            return ["❌ 请先上传数据", "", "", None, "", ""]
         
         if not target_col:
-            return "❌ 请选择目标列 Y", "", ""
+            return ["❌ 请选择目标列 Y", "", "", None, "", ""]
         
         prog(0.1, desc="解析任务...")
         
@@ -624,6 +641,30 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
             except Exception as e:
                 success = False
                 msg = f"❌ PatchTST训练失败: {str(e)}"
+                lstm_pred = None
+        
+        elif model_name == 'EnhancedCNN1D':
+            try:
+                from src.models.cnn1d_complex import EnhancedCNN1DPredictor
+                lstm_pred = EnhancedCNN1DPredictor()
+                success, msg = lstm_pred.train(
+                    X_for_model, y,
+                    seq_len=params.get('seq_len', 96),
+                    pred_len=params.get('pred_len', 48),
+                    hidden_channels=params.get('hidden_channels', 64),
+                    num_scales=params.get('num_scales', 3),
+                    kernel_sizes=(3, 5, 7),
+                    num_res_blocks=params.get('num_res_blocks', 2),
+                    epochs=params.get('epochs', 50),
+                    batch_size=params.get('batch_size', 32),
+                    learning_rate=params.get('learning_rate', 0.001),
+                    dropout=params.get('dropout', 0.1),
+                    use_attention=True
+                )
+                predictor = None
+            except Exception as e:
+                success = False
+                msg = f"❌ EnhancedCNN1D训练失败: {str(e)}"
                 lstm_pred = None
         
         elif task_type == 'time_series' and model_name == 'LSTM':
@@ -856,7 +897,7 @@ with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
     file_input.change(
         on_file_upload,
         inputs=[file_input],
-        outputs=[data_preview, data_info, data_structure_info, feature_col, target_col, model_recommend, model_select]
+        outputs=[data_preview, data_info, data_structure_info, data_decouple_info, feature_col, target_col, model_recommend, model_select]
     )
     train_btn.click(
         on_train,

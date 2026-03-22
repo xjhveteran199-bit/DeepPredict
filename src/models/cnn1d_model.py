@@ -60,10 +60,11 @@ class CNN1DModelV4(nn.Module):
         self.pred_len = pred_len
         
         # Patch embedding：用卷积做 patch
-        # 把 seq_len 分成 patches，每个 patch 大小 = patch_size
-        self.patch_size = 16
+        # 自动选择能整除 seq_len 的最大 patch_size
+        valid_patch_sizes = [p for p in [1, 2, 4, 8, 16, 24, 32] if seq_len % p == 0]
+        self.patch_size = valid_patch_sizes[-1] if valid_patch_sizes else 1
         self.num_patches = seq_len // self.patch_size
-        
+
         self.patch_embed = nn.Conv1d(
             input_size, hidden_channels,
             kernel_size=self.patch_size,
@@ -163,6 +164,24 @@ class CNN1DPredictorV4:
             n_features = X.shape[1]
             self.n_features = n_features
 
+            # ========== 小数据集保护：自动缩小窗口 ==========
+            min_window = seq_len + pred_len
+            if n_samples < min_window:
+                auto_seq = max(4, n_samples // 4)
+                auto_pred = max(1, n_samples - auto_seq - max(10, n_samples // 10))
+                seq_len = auto_seq
+                pred_len = auto_pred
+                self.seq_len = seq_len
+                self.pred_len = pred_len
+                logger.warning(f"CNN1D 数据不足（{n_samples}），自动调整 seq_len={seq_len}, pred_len={pred_len}")
+
+            min_window = seq_len + pred_len
+            if n_samples < min_window + 10:
+                return False, (
+                    f"数据不足：{n_samples} 条样本不足以进行训练。"
+                    f"请至少准备 {min_window + 10} 条数据。"
+                )
+
             # 用训练集的 mean/std 归一化
             self._target_mean = float(np.mean(y))
             self._target_std = float(np.std(y)) + 1e-8
@@ -173,10 +192,14 @@ class CNN1DPredictorV4:
             for i in range(seq_len, n_samples - pred_len + 1):
                 X_seqs.append(X[i - seq_len:i])      # (seq_len, n_features)
                 y_seqs.append(y_norm[i:i + pred_len])  # (pred_len,)
-            
+
             n_seqs = len(X_seqs)
             if n_seqs < 10:
-                return False, f"样本不足：{n_seqs}"
+                return False, (
+                    f"滑动窗口产生样本不足：{n_seqs} 个序列（数据 {n_samples}"
+                    f" / seq_len {seq_len} / pred_len {pred_len}）。"
+                    f"请减少 seq_len 或 pred_len。"
+                )
 
             X_tensor = torch.FloatTensor(np.array(X_seqs))
             y_tensor = torch.FloatTensor(np.array(y_seqs))

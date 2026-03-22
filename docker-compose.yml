@@ -1,0 +1,27 @@
+version: '3.9'
+
+services:
+  deeppredict:
+    build: .
+    container_name: deeppredict-web
+    restart: unless-stopped
+    ports:
+      - "8000:8000"   # FastAPI（首页 + API）
+      - "7860:7860"   # Gradio（预测工具）
+    environment:
+      - PORT=8000
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - STRIPE_PRICE_100=${STRIPE_PRICE_100}
+      - STRIPE_PRICE_500=${STRIPE_PRICE_500}
+      - STRIPE_PRICE_1000=${STRIPE_PRICE_1000}
+      - DATABASE_URL=sqlite:///./deeppredict.db
+    volumes:
+      - ./deeppredict.db:/app/deeppredict.db
+      - ./.env:/app/.env:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

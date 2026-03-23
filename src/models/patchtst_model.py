@@ -77,8 +77,8 @@ class FlattenHead(nn.Module):
 
 
 class PatchTSTBlock(nn.Module):
-    """单层 Transformer 编码器块"""
-    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1):
+    """单层 Transformer 编码器块 - 优化版：残差连接"""
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1, drop_path_rate: float = 0.0):
         super().__init__()
         self.attention = nn.MultiheadAttention(
             embed_dim=d_model, num_heads=n_heads,
@@ -94,12 +94,10 @@ class PatchTSTBlock(nn.Module):
             nn.Dropout(dropout)
         )
         self.dropout = nn.Dropout(dropout)
+        self.drop_path_rate = drop_path_rate
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Pre-norm 自注意力
-        attn_out, _ = self.attention(self.norm1(x), self.norm1(x), self.norm1(x))
-        x = x + self.dropout(attn_out)
-        # FFN
+        x = x + self.dropout(self.attention(self.norm1(x), self.norm1(x), self.norm1(x))[0])
         x = x + self.ffn(self.norm2(x))
         return x
 
@@ -111,6 +109,7 @@ class PatchTST(nn.Module):
     - Projection：线性投影到 d_model 维度
     - Transformer 编码器
     - RevIN 归一化
+    优化：小数据友好，默认使用更小的模型
     """
     
     def __init__(
@@ -119,12 +118,12 @@ class PatchTST(nn.Module):
         c_out: int,          # 输出通道数（目标变量数）
         seq_len: int = 96,   # 输入序列长度
         pred_len: int = 96,  # 预测序列长度
-        patch_size: int = 16,# 每个patch的长度
-        d_model: int = 128,  # 模型维度
+        patch_size: int = 8, # 每个patch的长度（默认更小）
+        d_model: int = 64,   # 模型维度（默认更小）
         n_heads: int = 4,    # 注意力头数
-        n_layers: int = 3,   # Transformer层数
-        d_ff: int = 256,     # FFN维度
-        dropout: float = 0.1,
+        n_layers: int = 2,   # Transformer层数（默认更少）
+        d_ff: int = 128,     # FFN维度（默认更小）
+        dropout: float = 0.2,
         use_revin: bool = True
     ):
         super().__init__()
@@ -151,11 +150,10 @@ class PatchTST(nn.Module):
             kernel_size=patch_size,
             stride=patch_size
         )
+        nn.init.kaiming_normal_(self.patch_proj.weight, mode='fan_in', nonlinearity='conv1d')
         
-        # 可学习的 CLS token（类似ViT，但不是用于分类而是用于预测）
-        # 添加一个可学习的 token 放在序列最前面
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
-        nn.init.trunc_normal_(self.cls_token, std=0.02)
+        # 可学习的 CLS token
+        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
         
         # 可学习位置编码
         self.pos_emb = nn.Parameter(torch.randn(1, self.n_patches + 1, d_model) * 0.02)
@@ -282,14 +280,14 @@ class PatchTSTPredictor:
         y: np.ndarray,
         seq_len: int = 96,
         pred_len: int = 96,
-        patch_size: int = 16,
-        d_model: int = 128,
+        patch_size: int = 8,
+        d_model: int = 64,
         n_heads: int = 4,
-        n_layers: int = 3,
-        d_ff: int = 256,
+        n_layers: int = 2,
+        d_ff: int = 128,
         epochs: int = 30,
-        batch_size: int = 32,
-        learning_rate: float = 0.0005,
+        batch_size: int = 16,
+        learning_rate: float = 0.001,
         test_size: float = 0.2,
         target_col: str = "",
         **kwargs
@@ -400,7 +398,20 @@ class PatchTSTPredictor:
                 patch_size = valid_patch_sizes[-1] if valid_patch_sizes else 4
                 self.patch_size = patch_size
             
-            # 创建模型
+            # ========== 自适应模型复杂度 ==========
+            n_train_seqs = int(len(X_tensor) * (1 - test_size))
+            if n_train_seqs < 100:
+                d_model = min(32, d_model)
+                n_layers = 1
+                d_ff = min(64, d_ff)
+                n_heads = 2
+                batch_size = max(4, batch_size // 2)
+            elif n_train_seqs < 300:
+                d_model = min(48, d_model)
+                n_layers = min(2, n_layers)
+                d_ff = min(96, d_ff)
+            
+            # ========== 创建模型 ==========
             self.model = PatchTST(
                 c_in=n_features,
                 c_out=n_targets,
@@ -411,13 +422,24 @@ class PatchTSTPredictor:
                 n_heads=n_heads,
                 n_layers=n_layers,
                 d_ff=d_ff,
+                dropout=0.25 if n_train_seqs < 100 else 0.15,
                 use_revin=True
             ).to(self.device)
             
             # 优化器和学习率调度器
             optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=0.01)
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-            criterion = nn.MSELoss()
+            
+            # Warmup + Cosine Annealing
+            warmup_epochs = max(3, epochs // 10)
+            def lr_lambda(epoch):
+                if epoch < warmup_epochs:
+                    return (epoch + 1) / warmup_epochs
+                progress = (epoch - warmup_epochs) / (epochs - warmup_epochs)
+                return 0.5 * (1 + np.cos(np.pi * progress))
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+            
+            # Huber loss for robustness
+            criterion = nn.HuberLoss(delta=0.5)
             
             # 训练循环
             self.model.train()
@@ -454,6 +476,28 @@ class PatchTSTPredictor:
                 
                 if (epoch + 1) % 5 == 0 or epoch == 0:
                     logger.info(f"PatchTST Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}")
+                
+                # Early stopping
+                if not hasattr(self, '_best_loss'):
+                    self._best_loss = float('inf')
+                    self._patience = 0
+                    self._best_state = None
+                
+                if avg_loss < self._best_loss:
+                    self._best_loss = avg_loss
+                    self._patience = 0
+                    self._best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                else:
+                    self._patience += 1
+                    if self._patience >= 5:
+                        logger.info(f"PatchTST Early stopping at epoch {epoch+1}")
+                        break
+            
+            # 恢复最佳模型
+            if hasattr(self, '_best_state') and self._best_state is not None:
+                self.model.load_state_dict(self._best_state)
+                self.model.to(self.device)
+                logger.info("PatchTST Restored best model state")
             
             # 评估
             self.model.eval()

@@ -17,23 +17,24 @@ logger = logging.getLogger(__name__)
 
 class CNN1DModelV4(nn.Module):
     """
-    改进版 CNN1D 时序预测模型 v4
+    改进版 CNN1D 时序预测模型 v5
 
-    参照 PatchTST 架构：
-    1. Patch 化：把时序分成多个 patch
-    2. CNN 特征提取
-    3. 直接多步预测
+    优化点：
+    1. 残差连接：稳定深层网络训练
+    2. 更小的默认 hidden_channels：小数据友好
+    3. Adaptive pooling：结合 mean + max
+    4. 更好的初始化
     """
 
     def __init__(
         self,
         input_size: int = 1,
-        hidden_channels: int = 128,
+        hidden_channels: int = 64,
         num_layers: int = 3,
         kernel_size: int = 3,
         seq_len: int = 96,
         pred_len: int = 48,
-        dropout: float = 0.1
+        dropout: float = 0.2
     ):
         super().__init__()
 
@@ -49,45 +50,46 @@ class CNN1DModelV4(nn.Module):
             kernel_size=self.patch_size,
             stride=self.patch_size
         )
+        nn.init.kaiming_normal_(self.patch_embed.weight, mode='fan_in', nonlinearity='conv1d')
 
         self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches, hidden_channels) * 0.02)
 
-        self.pool_conv = nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1)
-
         self.encoder_layers = nn.ModuleList()
         for i in range(num_layers):
+            in_ch = hidden_channels
             self.encoder_layers.append(nn.Sequential(
-                nn.Conv1d(hidden_channels, hidden_channels, kernel_size, padding=kernel_size//2),
-                nn.BatchNorm1d(hidden_channels),
+                nn.Conv1d(in_ch, in_ch, kernel_size, padding=kernel_size//2, bias=False),
+                nn.BatchNorm1d(in_ch),
                 nn.GELU(),
                 nn.Dropout(dropout)
             ))
 
         self.head = nn.Sequential(
-            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.Linear(hidden_channels * 2, hidden_channels),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_channels // 2, pred_len)
+            nn.Linear(hidden_channels, pred_len)
         )
 
     def forward(self, x):
         # x: (batch, seq_len, input_size)
         x = x.transpose(1, 2)
 
-        # Patch embedding: (batch, input_size, seq_len) -> (batch, hidden_channels, num_patches)
         x = self.patch_embed(x)
-        # -> (batch, num_patches, hidden_channels)
         x = x.transpose(1, 2)
         x = x + self.pos_embedding
-        x = x.transpose(1, 2)
 
         for layer in self.encoder_layers:
-            x = layer(x)
+            x = x.transpose(1, 2)
+            x = layer(x) + x
+            x = x.transpose(1, 2)
 
-        x = self.pool_conv(x)
-        x = x.mean(dim=-1)
+        x = x.transpose(1, 2)
+        x_mean = x.mean(dim=-1)
+        x_max = x.max(dim=-1)[0]
+        x_combined = torch.cat([x_mean, x_max], dim=-1)
 
-        out = self.head(x)
+        out = self.head(x_combined)
 
         return out
 
@@ -238,6 +240,9 @@ class CNN1DPredictorV4:
         self.device: str = "cpu"
         self.target_col: str = ""
         self._bias_offset: float = 0.0
+        self.train_losses: list = []   # 每个 epoch 的训练 loss
+        self.val_losses: list = []     # 每个 epoch 的验证 loss
+        self._fig: Optional[Any] = None  # 损失曲线 figure
 
     def train(
         self,
@@ -245,11 +250,11 @@ class CNN1DPredictorV4:
         y: np.ndarray,
         seq_len: int = 96,
         pred_len: int = 48,
-        hidden_channels: int = 128,
+        hidden_channels: int = 64,
         num_layers: int = 3,
         kernel_size: int = 3,
         epochs: int = 50,
-        batch_size: int = 32,
+        batch_size: int = 16,
         learning_rate: float = 0.001,
         test_size: float = 0.2,
         target_col: str = "",
@@ -275,7 +280,7 @@ class CNN1DPredictorV4:
             n_features = X.shape[1]
             self.n_features = n_features
 
-            # ========== 小数据集保护：自动缩小窗口 ==========
+            # ========== 小数据集保护：自动缩小窗口和隐藏层 ==========
             min_window = seq_len + pred_len
             if n_samples < min_window:
                 auto_seq = max(4, n_samples // 4)
@@ -285,6 +290,14 @@ class CNN1DPredictorV4:
                 self.seq_len = seq_len
                 self.pred_len = pred_len
                 logger.warning(f"CNN1D 数据不足（{n_samples}），自动调整 seq_len={seq_len}, pred_len={pred_len}")
+
+            # ========== 自适应隐藏层大小 ==========
+            if n_samples < 200:
+                hidden_channels = min(32, hidden_channels)
+                batch_size = max(4, min(8, batch_size))
+            elif n_samples < 500:
+                hidden_channels = min(48, hidden_channels)
+                batch_size = max(8, min(16, batch_size))
 
             min_window = seq_len + pred_len
             if n_samples < min_window + 10:
@@ -329,12 +342,28 @@ class CNN1DPredictorV4:
                 num_layers=num_layers,
                 kernel_size=kernel_size,
                 seq_len=seq_len,
-                pred_len=pred_len
+                pred_len=pred_len,
+                dropout=0.15 if n_samples > 200 else 0.25
             ).to(self.device)
 
-            criterion = nn.MSELoss()
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-5)
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+            criterion = nn.HuberLoss(delta=0.5)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
+
+            # ========== 实时损失曲线绘图准备 ==========
+            self.train_losses = []
+            self.val_losses = []
+            try:
+                import matplotlib
+                matplotlib.use('qtagg')
+                import matplotlib.pyplot as plt
+                plt.ion()  # 交互模式，不阻塞
+                fig, ax = plt.subplots(figsize=(8, 4))
+                self._fig = fig
+                self._ax = ax
+            except Exception:
+                self._fig = None
+                logger.warning("Matplotlib qtagg 不可用，跳过实时损失曲线")
 
             self.model.train()
             for epoch in range(epochs):
@@ -357,10 +386,79 @@ class CNN1DPredictorV4:
                     epoch_loss += loss.item()
                     n_batches += 1
 
+                avg_train_loss = epoch_loss / max(n_batches, 1)
                 scheduler.step()
 
+                # 计算验证 loss
+                self.model.eval()
+                with torch.no_grad():
+                    val_pred = self.model(X_test.to(self.device))
+                    val_loss = criterion(val_pred, y_test.to(self.device)).item()
+                self.model.train()
+
+                # Early stopping
+                if not hasattr(self, '_best_val_loss'):
+                    self._best_val_loss = float('inf')
+                    self._patience_counter = 0
+                    self._best_state = None
+                
+                if val_loss < self._best_val_loss:
+                    self._best_val_loss = val_loss
+                    self._patience_counter = 0
+                    self._best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                else:
+                    self._patience_counter += 1
+                    if self._patience_counter >= 5:
+                        logger.info(f"CNN1D Early stopping at epoch {epoch+1}")
+                        break
+
+                self.train_losses.append(avg_train_loss)
+                self.val_losses.append(val_loss)
+
+                # 实时更新损失曲线
+                if self._fig is not None:
+                    ax = self._ax
+                    ax.clear()
+                    epochs_range = range(1, len(self.train_losses) + 1)
+                    ax.plot(epochs_range, self.train_losses, 'b-', label='Train Loss', linewidth=1.5)
+                    ax.plot(epochs_range, self.val_losses, 'r-', label='Val Loss', linewidth=1.5)
+                    ax.set_xlabel('Epoch')
+                    ax.set_ylabel('Loss (MSE)')
+                    ax.set_title(f'CNN1D-V4 Training Progress (Epoch {epoch+1}/{epochs})')
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    self._fig.canvas.draw()
+                    self._fig.canvas.flush_events()
+
                 if (epoch + 1) % 10 == 0:
-                    logger.info(f"CNN1D-V4 Epoch {epoch+1}/{epochs}, Loss: {epoch_loss/max(n_batches,1):.6f}")
+                    logger.info(f"CNN1D-V4 Epoch {epoch+1}/{epochs}, TrainLoss: {avg_train_loss:.6f}, ValLoss: {val_loss:.6f}")
+
+            # 训练完成：保存最终损失曲线图
+            if self._fig is not None:
+                plt.ioff()
+                ax = self._ax
+                ax.clear()
+                epochs_range = range(1, len(self.train_losses) + 1)
+                ax.plot(epochs_range, self.train_losses, 'b-', label='Train Loss', linewidth=2)
+                ax.plot(epochs_range, self.val_losses, 'r-', label='Val Loss', linewidth=2)
+                ax.set_xlabel('Epoch')
+                ax.set_ylabel('Loss (MSE)')
+                ax.set_title('CNN1D-V4 Training Complete - Loss Curve')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                self._fig.tight_layout()
+                # 保存图片
+                fig_path = 'cnn1d_loss_curve.png'
+                self._fig.savefig(fig_path, dpi=150)
+                logger.info(f"Loss curve saved: {fig_path}")
+                plt.close(self._fig)
+                self._fig = None
+
+            # 恢复最佳模型
+            if hasattr(self, '_best_state') and self._best_state is not None:
+                self.model.load_state_dict(self._best_state)
+                self.model.to(self.device)
+                logger.info("CNN1D Restored best model state")
 
             # 评估
             self.model.eval()
@@ -480,6 +578,62 @@ class CNN1DPredictorV4:
 
     def get_feature_importance(self) -> Dict[str, float]:
         return {}
+
+    def plot_loss_curve(self, save_path: str = None, show: bool = True):
+        """
+        绘制并展示训练损失曲线
+
+        Args:
+            save_path: 保存路径（可选）
+            show: 是否显示窗口
+        """
+        if not self.train_losses:
+            logger.warning("No training losses recorded")
+            return
+
+        try:
+            import matplotlib
+            matplotlib.use('qtagg')
+            import matplotlib.pyplot as plt
+        except Exception:
+            logger.warning("Matplotlib not available")
+            return
+
+        fig, ax = plt.subplots(figsize=(9, 5))
+
+        epochs_range = range(1, len(self.train_losses) + 1)
+        ax.plot(epochs_range, self.train_losses, 'b-o', label='Train Loss',
+                linewidth=2, markersize=4, alpha=0.8)
+        ax.plot(epochs_range, self.val_losses, 'r-s', label='Val Loss',
+                linewidth=2, markersize=4, alpha=0.8)
+
+        ax.set_xlabel('Epoch', fontsize=12)
+        ax.set_ylabel('Loss (MSE)', fontsize=12)
+        ax.set_title(f'CNN1D-V4 Training Loss (Final Train={self.train_losses[-1]:.4f}, Val={self.val_losses[-1]:.4f})',
+                    fontsize=13)
+        ax.legend(fontsize=11)
+        ax.grid(True, alpha=0.3)
+
+        # 标注最优 epoch
+        best_val_epoch = int(np.argmin(self.val_losses)) + 1
+        best_val = min(self.val_losses)
+        ax.axvline(x=best_val_epoch, color='green', linestyle='--', alpha=0.6)
+        ax.annotate(f'Best Val\nEpoch {best_val_epoch}\n{best_val:.4f}',
+                   xy=(best_val_epoch, best_val),
+                   xytext=(best_val_epoch + max(epochs_range) * 0.1, best_val * 1.1),
+                   fontsize=10,
+                   arrowprops=dict(arrowstyle='->', color='green', alpha=0.6))
+
+        fig.tight_layout()
+
+        if save_path:
+            fig.savefig(save_path, dpi=150)
+            logger.info(f"Loss curve saved: {save_path}")
+
+        if show:
+            plt.show()
+
+        return fig
 
     def save_model(self, path: str):
         if self.model is None:

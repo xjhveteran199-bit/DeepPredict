@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class LSTMModel(nn.Module):
-    """LSTM 预测模型"""
+    """LSTM 预测模型 - 优化版：LayerNorm + 残差连接"""
 
     def __init__(self, input_size: int, hidden_size: int = 64, num_layers: int = 2, dropout: float = 0.2):
         super().__init__()
@@ -35,9 +35,15 @@ class LSTMModel(nn.Module):
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0
         )
-        self.fc = nn.Linear(hidden_size, 1)
+        
+        self.layer_norm = nn.LayerNorm(hidden_size)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.Tanh(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size // 2, 1)
+        )
 
-        # 稳定性修复：Xavier 权重初始化
         for name, param in self.named_parameters():
             if 'weight_ih' in name:
                 nn.init.xavier_uniform_(param)
@@ -48,6 +54,7 @@ class LSTMModel(nn.Module):
 
     def forward(self, x):
         lstm_out, _ = self.lstm(x)
+        lstm_out = self.layer_norm(lstm_out)
         out = self.fc(lstm_out[:, -1, :])
         return out.squeeze(-1)
 
@@ -67,6 +74,9 @@ class LSTMPredictor:
         self.feature_names: Optional[list] = None
         self.target_col: str = ""
         self.best_state: Optional[dict] = None  # for early stopping
+        self.train_losses: list = []
+        self.val_losses: list = []
+        self._fig = None
 
     def _create_sequences(self, data: np.ndarray, target: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         X, y = [], []
@@ -139,6 +149,20 @@ class LSTMPredictor:
             self.best_state = None
             MAX_PATIENCE = 10
 
+            # 实时绘图初始化
+            self.train_losses = []
+            self.val_losses = []
+            try:
+                import matplotlib
+                matplotlib.use('qtagg')
+                import matplotlib.pyplot as plt
+                plt.ion()
+                fig, ax = plt.subplots(figsize=(8, 4))
+                self._fig = fig
+                self._ax = ax
+            except Exception:
+                self._fig = None
+
             self.model.train()
             for epoch in range(epochs):
                 epoch_loss = 0
@@ -151,22 +175,38 @@ class LSTMPredictor:
                     loss = criterion(output, batch_y)
                     loss.backward()
 
-                    # 稳定性修复：Gradient clipping
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
 
                     optimizer.step()
                     epoch_loss += loss.item()
 
                 avg_train_loss = epoch_loss / len(train_loader)
-
-                # 每轮用验证 loss 调整学习率
+                
                 self.model.eval()
                 with torch.no_grad():
                     val_preds = self.model(X_test_t.to(self.device)).cpu().numpy()
-                    val_mse = np.mean((val_preds - y_test) ** 2)
+                    val_mse = float(np.mean((val_preds - y_test) ** 2))
                 self.model.train()
+                
+                self.train_losses.append(avg_train_loss)
+                self.val_losses.append(val_mse)
 
                 scheduler.step(val_mse)
+                
+                # 实时更新损失曲线
+                if self._fig is not None:
+                    ax = self._ax
+                    ax.clear()
+                    epochs_range = range(1, len(self.train_losses) + 1)
+                    ax.plot(epochs_range, self.train_losses, 'b-', label='Train Loss', linewidth=1.5)
+                    ax.plot(epochs_range, self.val_losses, 'r-', label='Val Loss', linewidth=1.5)
+                    ax.set_xlabel('Epoch')
+                    ax.set_ylabel('Loss (MSE)')
+                    ax.set_title(f'LSTM Training Progress (Epoch {epoch+1})')
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    self._fig.canvas.draw()
+                    self._fig.canvas.flush_events()
 
                 # Early stopping
                 if val_mse < best_val_loss:
@@ -187,6 +227,26 @@ class LSTMPredictor:
                 if patience_counter >= MAX_PATIENCE:
                     logger.info(f"LSTM Early stopping at epoch {epoch+1}")
                     break
+
+            # 训练完成：保存损失曲线
+            if self._fig is not None:
+                plt.ioff()
+                ax = self._ax
+                ax.clear()
+                epochs_range = range(1, len(self.train_losses) + 1)
+                ax.plot(epochs_range, self.train_losses, 'b-', label='Train Loss', linewidth=2)
+                ax.plot(epochs_range, self.val_losses, 'r-', label='Val Loss', linewidth=2)
+                ax.set_xlabel('Epoch')
+                ax.set_ylabel('Loss (MSE)')
+                ax.set_title('LSTM Training Complete - Loss Curve')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                self._fig.tight_layout()
+                fig_path = 'lstm_loss_curve.png'
+                self._fig.savefig(fig_path, dpi=150)
+                logger.info(f"LSTM loss curve saved: {fig_path}")
+                plt.close(self._fig)
+                self._fig = None
 
             # 恢复最佳模型
             if self.best_state is not None:

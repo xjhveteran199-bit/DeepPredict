@@ -57,7 +57,7 @@ def setup_logging():
 
 def main():
     logger = setup_logging()
-    logger.info("DeepPredict v1.01 启动")
+    logger.info("DeepPredict v1.04 启动")
     
     # 启用高DPI支持
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)

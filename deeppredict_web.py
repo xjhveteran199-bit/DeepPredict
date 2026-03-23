@@ -1,5 +1,5 @@
 """
-DeepPredict Web 版 - Gradio 界面 v1.03
+DeepPredict Web 版 - Gradio 界面 v1.04
 改进：智能数据分析 + 用户引导
 """
 
@@ -299,7 +299,7 @@ lstm_pred = None
 
 # ============ Gradio 界面 ============
 
-with gr.Blocks(title="DeepPredict v1.03 - 智能数据分析版") as demo:
+with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
     
     # 首页介绍
     with gr.Tab("🏠 首页介绍"):
@@ -912,7 +912,7 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 7860))
     print("=" * 60)
-    print("  DeepPredict Web 版 v1.03 已启动！")
+    print("  DeepPredict Web 版 v1.04 已启动！")
     print(f"  访问地址: http://0.0.0.0:{port}")
     print("  同一局域网内的手机/电脑都可以访问")
     print("  按 Ctrl+C 停止")

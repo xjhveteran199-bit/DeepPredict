@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
     
     def _init_ui(self):
         """初始化UI"""
-        self.setWindowTitle("DeepPredict - 智能预测工具 v1.01 (PatchTST)")
+        self.setWindowTitle("DeepPredict - 智能预测工具 v1.04 (PatchTST + CNN1D-V4 + Decouple)")
         self.setMinimumSize(1200, 800)
         
         # 中央部件

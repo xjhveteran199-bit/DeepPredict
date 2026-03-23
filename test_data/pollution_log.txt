@@ -1,0 +1,7 @@
+Data: 41757 samples
+Train: 29229, Test: 12528
+
+>>> CNN1D...
+CNN1D: R2=0.5694, RMSE=59.4055, MAE=37.4920
+
+>>> LSTM...

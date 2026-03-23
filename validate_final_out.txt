@@ -1,0 +1,140 @@
+Traceback (most recent call last):
+  File "C:\Users\XJH\DeepPredict\validate_final.py", line 176, in test_model
+    preds = model.predict_future(last_window, steps=n_test)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XJH\DeepPredict\src\models\lstm_model.py", line 217, in predict_future
+    preds = self.predict(x_input)  # 调用现有的 predict 方法
+            ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XJH\DeepPredict\src\models\lstm_model.py", line 184, in predict
+    raise ValueError("数据长度不足，无法创建预测序列（需要 > seq_len 条数据）")
+ValueError: 数据长度不足，无法创建预测序列（需要 > seq_len 条数据）
+Traceback (most recent call last):
+  File "C:\Users\XJH\DeepPredict\validate_final.py", line 176, in test_model
+    preds = model.predict_future(last_window, steps=n_test)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XJH\DeepPredict\src\models\lstm_model.py", line 217, in predict_future
+    preds = self.predict(x_input)  # 调用现有的 predict 方法
+            ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XJH\DeepPredict\src\models\lstm_model.py", line 184, in predict
+    raise ValueError("数据长度不足，无法创建预测序列（需要 > seq_len 条数据）")
+ValueError: 数据长度不足，无法创建预测序列（需要 > seq_len 条数据）
+Traceback (most recent call last):
+  File "C:\Users\XJH\DeepPredict\validate_final.py", line 176, in test_model
+    preds = model.predict_future(last_window, steps=n_test)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XJH\DeepPredict\src\models\lstm_model.py", line 217, in predict_future
+    preds = self.predict(x_input)  # 调用现有的 predict 方法
+            ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\XJH\DeepPredict\src\models\lstm_model.py", line 184, in predict
+    raise ValueError("数据长度不足，无法创建预测序列（需要 > seq_len 条数据）")
+ValueError: 数据长度不足，无法创建预测序列（需要 > seq_len 条数据）
+======================================================================
+FINAL VALIDATION: CNN1D + Decoupling on Real Open Datasets
+======================================================================
+
+[DATA 1] Shampoo Sales
+----------------------------------------
+Loaded: {'name': 'Sales', 'len': 36, 'range': (np.float32(119.3), np.float32(682.0))}
+
+[DATA 2] Airline Passengers
+----------------------------------------
+Loaded: {'name': 'Passengers', 'len': 144, 'range': (np.float32(104.0), np.float32(622.0))}
+
+[DATA 3] Temperature
+----------------------------------------
+Loaded: {'name': 'Temp', 'len': 3650, 'range': (np.float32(0.0), np.float32(26.3))}
+
+======================================================================
+[TEST 1] Shampoo Sales Forecasting (n=36, 小数据)
+======================================================================
+Data size 36, adaptive seq_len=7
+
+  [CNN1D] n=36, seq_len=7, epochs=100, pred_steps=8
+  [CNN1D] R2=-2.6412, RMSE=196.0541, MAE=175.4268
+
+  [LSTM] n=36, seq_len=4, epochs=100, pred_steps=8
+  [LSTM] EXCEPTION: 数据长度不足，无法创建预测序列（需要 > seq_len 条数据）
+
+  [PatchTST] n=36, seq_len=7, epochs=100, pred_steps=8
+  [PatchTST] TRAIN FAILED: 数据不足：只有13个训练样本，需要至少50个。请增加数据量或减少seq_len/pred_len。
+
+======================================================================
+[TEST 2] Airline Passengers (n=144, 季节性)
+======================================================================
+Data size 144, adaptive seq_len=14
+
+  [CNN1D] n=144, seq_len=14, epochs=50, pred_steps=24
+  [CNN1D] R2=-1.2713, RMSE=115.2593, MAE=102.2758
+
+  [LSTM] n=144, seq_len=7, epochs=50, pred_steps=24
+  [LSTM] EXCEPTION: 数据长度不足，无法创建预测序列（需要 > seq_len 条数据）
+
+  [PatchTST] n=144, seq_len=14, epochs=50, pred_steps=24
+  [PatchTST] R2=0.7350, RMSE=39.3714, MAE=34.8892
+
+======================================================================
+[TEST 3] Temperature (n=3650)
+======================================================================
+
+  [CNN1D] n=3650, seq_len=50, epochs=30, pred_steps=48
+  [CNN1D] R2=-0.8082, RMSE=3.2882, MAE=2.7550
+
+  [LSTM] n=3650, seq_len=30, epochs=30, pred_steps=48
+  [LSTM] EXCEPTION: 数据长度不足，无法创建预测序列（需要 > seq_len 条数据）
+
+  [PatchTST] n=3650, seq_len=48, epochs=30, pred_steps=24
+  [PatchTST] R2=-1.8387, RMSE=3.9850, MAE=3.1201
+
+======================================================================
+[TEST 4] Multi-channel Decoupling (Synthetic 3-source mixed)
+======================================================================
+3 sources -> mixed signals: S=(3000, 3), X=(3000, 3)
+
+[4a] FastICA Linear Decoupling...
+  src0: best r=1.000 (thr=0.85)
+  src1: best r=0.999 (thr=0.85)
+  src2: best r=1.000 (thr=0.85)
+[FastICA] PASS: 3/3 recovered (r>0.85)
+
+[4b] AutoEncoder Nonlinear Decoupling...
+Reconstruction RMSE: 0.1576
+[AutoEncoder] PASS: 2/3 recovered, recon_err=0.1576
+
+[4c] Decoupled CNN1D vs Direct CNN1D on Synthetic Data...
+  [4c-i] Direct CNN1D on mixed signals...
+  Direct CNN1D R2=-4.3122
+  [4c-ii] ICA-Decoupled CNN1D...
+  Decoupled CNN1D R2=-1.0556
+  Decoupling improvement: R2 +3.2566
+
+======================================================================
+[TEST 5] Real Multi-channel: Pollution Forecasting
+======================================================================
+All numeric cols: ['year', 'month', 'day', 'hour', 'pollution', 'dew', 'temp', 'press', 'wnd_spd', 'snow', 'rain']
+Target: pollution, Features: ['dew', 'temp', 'press', 'wnd_spd', 'snow', 'rain']
+Loaded: X=(43824, 6), y=43824
+Using: X=(5000, 6), y=5000
+
+[5a] Direct CNN1D on multi-channel pollution data...
+[5a] Direct CNN1D: R2=-290121648382.5739, RMSE=14781771.2950
+
+[5b] ICA-Decoupled CNN1D...
+[5b] ICA-Decoupled CNN1D: R2=-1104860970034008138462494805983232.0000, RMSE=912200332977876480.0000
+  Improvement vs Direct: R2 -1104860970034008138462494805983232.0000
+
+======================================================================
+SUMMARY
+======================================================================
+
+  Dataset           | Model      | R2       | RMSE
+  -------------------------------------------------------
+  Shampoo           | CNN1D     | -2.6412 | 196.0541
+  Airline           | CNN1D     | -1.2713 | 115.2593
+  Airline           | PatchTST  | 0.7350 | 39.3714
+  Temperature       | CNN1D     | -0.8082 | 3.2882
+  Temperature       | PatchTST  | -1.8387 | 3.9850
+
+  Decoupling (Synthetic): FastICA PASS (3/3), AutoEncoder operational
+======================================================================
+VALIDATION COMPLETE
+======================================================================

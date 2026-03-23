@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "C:\Users\XJH\DeepPredict\exp_b.py", line 76, in <module>
+    p = lstm_b.predict(np.array(cur[-96:]))[-1]
+  File "C:\Users\XJH\DeepPredict\src\models\lstm_model.py", line 184, in predict
+    raise ValueError("数据长度不足，无法创建预测序列（需要 > seq_len 条数据）")
+ValueError: 数据长度不足，无法创建预测序列（需要 > seq_len 条数据）

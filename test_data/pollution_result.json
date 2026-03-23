@@ -1,0 +1,30 @@
+{
+  "dataset": "Beijing Hourly Pollution",
+  "n": 41757,
+  "n_train": 29229,
+  "n_test": 12528,
+  "target": "pm2.5",
+  "source": "https://raw.githubusercontent.com/jbrownlee/Datasets/master/pollution.csv",
+  "seq_len": 48,
+  "pred_chunk": 12,
+  "epochs": 10,
+  "results": {
+    "CNN1D": {
+      "status": "ok",
+      "r2": 0.5669,
+      "rmse": 59.5801,
+      "mae": 37.2525
+    },
+    "PatchTST": {
+      "status": "fail",
+      "error": "训练超时/挂起"
+    },
+    "LSTM": {
+      "status": "ok",
+      "r2": -1.487,
+      "rmse": 23.16,
+      "mae": 20.11,
+      "note": "使用seq_len=24快速测试结果"
+    }
+  }
+}

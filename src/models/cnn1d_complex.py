@@ -97,9 +97,9 @@ class MultiScaleCNN1D(nn.Module):
         self.branches = nn.ModuleList()
         for ks in kernel_sizes:
             self.branches.append(nn.Sequential(
-                nn.Conv1d(hidden_channels, hidden_channels // len(kernel_sizes),
+                nn.Conv1d(hidden_channels, hidden_channels,
                           kernel_size=ks, padding=ks // 2, bias=False),
-                nn.BatchNorm1d(hidden_channels // len(kernel_sizes)),
+                nn.BatchNorm1d(hidden_channels),
                 nn.GELU(),
                 nn.Dropout(dropout),
             ))
@@ -107,7 +107,8 @@ class MultiScaleCNN1D(nn.Module):
         # SE 通道注意力（融合后）
         self.se = SEBlock(hidden_channels, reduction=4)
 
-        # 融合层
+        # 融合层：压缩多分支输出到 hidden_channels
+        self.proj = nn.Conv1d(hidden_channels * len(kernel_sizes), hidden_channels, kernel_size=1, bias=False)
         self.fusion = nn.Sequential(
             nn.Conv1d(hidden_channels, hidden_channels, kernel_size=1, bias=False),
             nn.BatchNorm1d(hidden_channels),
@@ -124,7 +125,8 @@ class MultiScaleCNN1D(nn.Module):
             branch_outputs.append(branch(x))
 
         # 拼接各分支
-        x = torch.cat(branch_outputs, dim=1)  # (batch, hidden, seq_len)
+        x = torch.cat(branch_outputs, dim=1)  # (batch, hidden*num_scales, seq_len)
+        x = self.proj(x)  # (batch, hidden, seq_len)
         x = self.se(x)
         x = self.fusion(x)
         return x
@@ -265,6 +267,15 @@ class EnhancedCNN1DPredictor:
             self._target_std = float(np.std(y)) + 1e-8
             y_norm = (y - self._target_mean) / self._target_std
 
+            # 多变量 X 标准化（关键修复！）
+            # 在构建序列窗口之前，对整个 X 做 fit_transform
+            # 确保每个特征列都是零均值单位方差，这对多变量 CNN 效果至关重要
+            self._x_scaler = None
+            if n_features > 1:
+                from sklearn.preprocessing import StandardScaler
+                self._x_scaler = StandardScaler()
+                X = self._x_scaler.fit_transform(X).astype(np.float32)
+
             # 构建序列：(seq, n_features) 的窗口
             X_seqs, y_seqs = [], []
             for i in range(seq_len, n_samples - pred_len + 1):
@@ -302,7 +313,7 @@ class EnhancedCNN1DPredictor:
             criterion = nn.MSELoss()
             optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
             scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                scheduler, T_0=10, T_mult=2, eta_min=learning_rate * 0.01
+                optimizer, T_0=10, T_mult=2, eta_min=learning_rate * 0.01
             )
 
             # 训练

@@ -1,0 +1,30 @@
+{
+  "dataset": "Daily Minimum Temperatures",
+  "n_samples": 3650,
+  "n_train": 2555,
+  "n_test": 1095,
+  "target": "Temp",
+  "source": "https://raw.githubusercontent.com/jbrownlee/Datasets/master/daily-min-temperatures.csv",
+  "seq_len": 96,
+  "pred_chunk": 48,
+  "results": {
+    "CNN1D": {
+      "status": "ok",
+      "r2": 0.5065077285577895,
+      "rmse": 2.8060484859845936,
+      "mae": 2.206290764830428
+    },
+    "PatchTST": {
+      "status": "ok",
+      "r2": 0.2008869667765658,
+      "rmse": 3.5707471655603067,
+      "mae": 2.7641267010937
+    },
+    "LSTM": {
+      "status": "ok",
+      "r2": 0.3317617651261431,
+      "rmse": 3.265281695682819,
+      "mae": 2.516267887427804
+    }
+  }
+}

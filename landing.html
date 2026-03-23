@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepPredict - 零门槛深度学习预测工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            line-height: 1.6;
+            color: #333;
+        }
+        
+        /* 导航栏 */
+        nav {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 2px 20px rgba(0,0,0,0.05);
+            z-index: 1000;
+            padding: 15px 0;
+        }
+        
+        .nav-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 20px;
+        }
+        
+        .logo {
+            font-size: 24px;
+            font-weight: 700;
+            color: #6366f1;
+        }
+        
+        .logo span {
+            color: #10b981;
+        }
+        
+        .nav-links a {
+            color: #666;
+            text-decoration: none;
+            margin-left: 30px;
+            font-size: 15px;
+            transition: color 0.3s;
+        }
+        
+        .nav-links a:hover {
+            color: #6366f1;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: white;
+            padding: 10px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(99, 102, 241, 0.3);
+        }
+        
+        /* Hero 区域 */
+        .hero {
+            padding: 160px 20px 100px;
+            text-align: center;
+            background: linear-gradient(180deg, #f8fafc 0%, #e0e7ff 100%);
+        }
+        
+        .hero h1 {
+            font-size: 56px;
+            font-weight: 800;
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, #1e1b4b, #6366f1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .hero p {
+            font-size: 20px;
+            color: #64748b;
+            max-width: 700px;
+            margin: 0 auto 40px;
+        }
+        
+        .hero-buttons {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        
+        .btn-large {
+            padding: 16px 36px;
+            font-size: 18px;
+            border-radius: 12px;
+        }
+        
+        .btn-secondary {
+            background: white;
+            color: #6366f1;
+            padding: 16px 36px;
+            border: 2px solid #e0e7ff;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+        
+        .btn-secondary:hover {
+            border-color: #6366f1;
+            background: #f8fafc;
+        }
+        
+        /* 统计 */
+        .stats {
+            display: flex;
+            justify-content: center;
+            gap: 60px;
+            margin-top: 80px;
+            flex-wrap: wrap;
+        }
+        
+        .stat-item {
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 42px;
+            font-weight: 700;
+            color: #6366f1;
+        }
+        
+        .stat-label {
+            font-size: 14px;
+            color: #64748b;
+            margin-top: 4px;
+        }
+        
+        /* 功能区 */
+        .features {
+            padding: 100px 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .section-title {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+        
+        .section-title h2 {
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+        
+        .section-title p {
+            color: #64748b;
+            font-size: 18px;
+        }
+        
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 30px;
+        }
+        
+        .feature-card {
+            background: white;
+            padding: 32px;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        
+        .feature-icon {
+            width: 56px;
+            height: 56px;
+            background: linear-gradient(135deg, #e0e7ff, #c7d2fe);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            margin-bottom: 20px;
+        }
+        
+        .feature-card h3 {
+            font-size: 20px;
+            margin-bottom: 12px;
+        }
+        
+        .feature-card p {
+            color: #64748b;
+            font-size: 15px;
+        }
+        
+        /* 场景区 */
+        .scenarios {
+            background: #f8fafc;
+            padding: 100px 20px;
+        }
+        
+        .scenarios-content {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        
+        .scenario-list {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
+        }
+        
+        .scenario-item {
+            background: white;
+            padding: 28px;
+            border-radius: 12px;
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+        }
+        
+        .scenario-icon {
+            font-size: 32px;
+            flex-shrink: 0;
+        }
+        
+        .scenario-item h4 {
+            font-size: 18px;
+            margin-bottom: 6px;
+        }
+        
+        .scenario-item p {
+            color: #64748b;
+            font-size: 14px;
+        }
+        
+        /* 定价 */
+        .pricing {
+            padding: 100px 20px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        
+        .price-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+        }
+        
+        .price-card {
+            background: white;
+            padding: 40px;
+            border-radius: 16px;
+            text-align: center;
+            border: 2px solid #e0e7ff;
+            transition: transform 0.3s;
+        }
+        
+        .price-card.featured {
+            border-color: #6366f1;
+            transform: scale(1.05);
+            box-shadow: 0 20px 50px rgba(99, 102, 241, 0.15);
+        }
+        
+        .price-card h3 {
+            font-size: 20px;
+            margin-bottom: 12px;
+        }
+        
+        .price {
+            font-size: 42px;
+            font-weight: 700;
+            color: #6366f1;
+        }
+        
+        .price span {
+            font-size: 16px;
+            color: #64748b;
+            font-weight: 400;
+        }
+        
+        .price-desc {
+            color: #64748b;
+            font-size: 14px;
+            margin: 12px 0 24px;
+        }
+        
+        .price-features {
+            text-align: left;
+            margin-bottom: 28px;
+        }
+        
+        .price-features li {
+            list-style: none;
+            padding: 8px 0;
+            font-size: 14px;
+            color: #444;
+        }
+        
+        .price-features li::before {
+            content: "✓ ";
+            color: #10b981;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+        
+        /* 底部 */
+        footer {
+            background: #1e1b4b;
+            color: white;
+            padding: 60px 20px;
+            text-align: center;
+        }
+        
+        footer h2 {
+            font-size: 28px;
+            margin-bottom: 20px;
+        }
+        
+        footer p {
+            color: #a5b4fc;
+            margin-bottom: 30px;
+        }
+        
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 36px;
+            }
+            
+            .hero p {
+                font-size: 16px;
+            }
+            
+            .stats {
+                gap: 30px;
+            }
+            
+            .feature-grid, .price-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .scenario-list {
+                grid-template-columns: 1fr;
+            }
+            
+            .price-card.featured {
+                transform: none;
+            }
+            
+            .nav-links {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav>
+        <div class="nav-content">
+            <div class="logo">Deep<span>Predict</span></div>
+            <div class="nav-links">
+                <a href="#features">功能</a>
+                <a href="#scenarios">场景</a>
+                <a href="#pricing">定价</a>
+                <a href="#contact">联系</a>
+            </div>
+            <a href="http://localhost:7860" class="btn-primary">立即使用</a>
+        </div>
+    </nav>
+    
+    <!-- Hero -->
+    <section class="hero">
+        <h1>零门槛的深度学习预测工具</h1>
+        <p>上传 CSV，选择目标列，AI 自动选择最优模型。无需编程基础，无需机器学习背景，让数据预测变得前所未有的简单。</p>
+        <div class="hero-buttons">
+            <a href="http://localhost:7860" class="btn-primary btn-large">🧠 免费开始使用</a>
+            <a href="#features" class="btn-secondary btn-large">了解更多</a>
+        </div>
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-number">3</div>
+                <div class="stat-label">内置高级模型</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number">0</div>
+                <div class="stat-label">编程基础要求</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number">5秒</div>
+                <div class="stat-label">完成一次预测</div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- 功能 -->
+    <section class="features" id="features">
+        <div class="section-title">
+            <h2>为什么选择 DeepPredict？</h2>
+            <p>专为非技术用户设计的智能预测平台</p>
+        </div>
+        <div class="feature-grid">
+            <div class="feature-card">
+                <div class="feature-icon">🤖</div>
+                <h3>AI 自动选模型</h3>
+                <p>上传数据后，系统自动分析数据结构，推荐最适合的预测模型（PatchTST、LSTM 或 GradientBoosting）。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📊</div>
+                <h3>零代码操作</h3>
+                <p>告别 Jupyter Notebook 和 Python 代码。只需上传 CSV 文件，点点鼠标即可完成复杂的时序预测。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🔒</div>
+                <h3>本地运行</h3>
+                <p>数据不上传到服务器，完全本地处理。保护你的数据隐私，适合科研和商业敏感数据。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📱</div>
+                <h3>支持手机访问</h3>
+                <p>响应式设计，手机和平板也能流畅使用。随时随地查看预测结果，不受设备限制。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">⏱️</div>
+                <h3>快速出结果</h3>
+                <p>几分钟内完成模型训练和预测，无需等待。支持批量数据处理，工作效率提升 10 倍。</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📈</div>
+                <h3>专业级模型</h3>
+                <p>集成 Transformer、LSTM、GradientBoosting 等业界领先的预测算法，效果对标专业数据科学家。</p>
+            </div>
+        </div>
+    </section>
+    
+    <!-- 场景 -->
+    <section class="scenarios" id="scenarios">
+        <div class="scenarios-content">
+            <div class="section-title">
+                <h2>适用场景</h2>
+                <p>各行业研究人员的得力助手</p>
+            </div>
+            <div class="scenario-list">
+                <div class="scenario-item">
+                    <div class="scenario-icon">🧬</div>
+                    <div>
+                        <h4>生物医学实验</h4>
+                        <p>预测细胞培养数据、药物反应、基因表达量变化趋势。</p>
+                    </div>
+                </div>
+                <div class="scenario-item">
+                    <div class="scenario-icon">📊</div>
+                    <div>
+                        <h4>市场销售预测</h4>
+                        <p>预测下月销售额、产品销量、市场趋势，提前规划业务。</p>
+                    </div>
+                </div>
+                <div class="scenario-item">
+                    <div class="scenario-icon">🌡️</div>
+                    <div>
+                        <h4>环境科学</h4>
+                        <p>预测空气质量、气候变化、污染扩散等环境时序数据。</p>
+                    </div>
+                </div>
+                <div class="scenario-item">
+                    <div class="scenario-icon">🏭</div>
+                    <div>
+                        <h4>工业质检</h4>
+                        <p>预测设备故障、产品质量波动，优化生产工艺。</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- 定价 -->
+    <section class="pricing" id="pricing">
+        <div class="section-title">
+            <h2>简单透明的定价</h2>
+            <p>个人用户免费使用，企业用户按需付费</p>
+        </div>
+        <div class="price-grid">
+            <div class="price-card">
+                <h3>个人版</h3>
+                <div class="price">¥0 <span>/ 永久免费</span></div>
+                <p class="price-desc">适合学习、研究、个人项目</p>
+                <ul class="price-features">
+                    <li>本地 Web 版本无限使用</li>
+                    <li>支持 PatchTST / LSTM / GB 模型</li>
+                    <li>单次预测 ≤10,000 条数据</li>
+                    <li>基础技术支持</li>
+                </ul>
+                <a href="http://localhost:7860" class="btn-primary" style="display:block;">免费开始</a>
+            </div>
+            <div class="price-card featured">
+                <h3>Pro 版</h3>
+                <div class="price">¥99 <span>/ 月</span></div>
+                <p class="price-desc">适合专业研究和小型团队</p>
+                <ul class="price-features">
+                    <li>无限数据量和预测次数</li>
+                    <li>优先使用最新模型</li>
+                    <li>一键导出预测报告</li>
+                    <li>邮件技术支持</li>
+                </ul>
+                <a href="#contact" class="btn-primary" style="display:block;">联系我们</a>
+            </div>
+            <div class="price-card">
+                <h3>企业版</h3>
+                <div class="price">¥2999 <span>/ 月</span></div>
+                <p class="price-desc">适合企业和大型组织</p>
+                <ul class="price-features">
+                    <li>私有部署，数据不出本地</li>
+                    <li>API 接口对接</li>
+                    <li>定制化模型开发</li>
+                    <li>专属技术支持 + 培训</li>
+                </ul>
+                <a href="#contact" class="btn-primary" style="display:block;">获取报价</a>
+            </div>
+        </div>
+    </section>
+    
+    <!-- 底部 -->
+    <footer id="contact">
+        <h2>准备好开始了吗？</h2>
+        <p>立即体验 DeepPredict，让数据预测变得简单高效</p>
+        <a href="http://localhost:7860" class="btn-primary btn-large">🚀 免费开始使用</a>
+        <div style="margin-top: 60px; color: #a5b4fc; font-size: 14px;">
+            <p>📧 contact@deeppredict.ai | 🌐 www.deeppredict.ai</p>
+            <p style="margin-top: 20px;">© 2026 DeepPredict. 让预测触手可及。</p>
+        </div>
+    </footer>
+</body>
+</html>

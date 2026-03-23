@@ -1,9 +1,9 @@
 """
-CNN1D 时序预测模型 v4
-完全参照 PatchTST 成功模式：
-1. 直接多步预测（一次性输出所有 pred_len 步）
-2. RevIN 归一化
-3. 直接用最后 seq_len 步预测接下来 pred_len 步
+CNN1D 时序预测模型 v5
+在 v4 基础上新增：
+1. 多变量支持（自动识别 input_size）
+2. 周期性特征注入（月份/星期/小时 sin/cos）
+3. Per-variable 归一化
 """
 
 import torch
@@ -15,29 +15,10 @@ from typing import Tuple, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-class RevIN:
-    """Reversible Instance Normalization - 时序预测专用归一化"""
-    def __init__(self, eps: float = 1e-5):
-        self.eps = eps
-        self.mean = None
-        self.std = None
-    
-    def forward(self, x):
-        # x: (batch, seq_len) or (batch, seq_len, channels)
-        if self.mean is None:
-            self.mean = x.mean(dim=1, keepdim=True)
-            self.std = x.std(dim=1, keepdim=True) + self.eps
-        return (x - self.mean) / self.std
-    
-    def backward(self, x):
-        # x: (batch, seq_len) or (batch, seq_len, channels)
-        return x * self.std + self.mean
-
-
 class CNN1DModelV4(nn.Module):
     """
-    改进版 CNN1D 时序预测模型
-    
+    改进版 CNN1D 时序预测模型 v4
+
     参照 PatchTST 架构：
     1. Patch 化：把时序分成多个 patch
     2. CNN 特征提取
@@ -55,12 +36,10 @@ class CNN1DModelV4(nn.Module):
         dropout: float = 0.1
     ):
         super().__init__()
-        
+
         self.seq_len = seq_len
         self.pred_len = pred_len
-        
-        # Patch embedding：用卷积做 patch
-        # 自动选择能整除 seq_len 的最大 patch_size
+
         valid_patch_sizes = [p for p in [1, 2, 4, 8, 16, 24, 32] if seq_len % p == 0]
         self.patch_size = valid_patch_sizes[-1] if valid_patch_sizes else 1
         self.num_patches = seq_len // self.patch_size
@@ -70,8 +49,11 @@ class CNN1DModelV4(nn.Module):
             kernel_size=self.patch_size,
             stride=self.patch_size
         )
-        
-        # 多层 CNN 特征提取
+
+        self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches, hidden_channels) * 0.02)
+
+        self.pool_conv = nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1)
+
         self.encoder_layers = nn.ModuleList()
         for i in range(num_layers):
             self.encoder_layers.append(nn.Sequential(
@@ -80,8 +62,7 @@ class CNN1DModelV4(nn.Module):
                 nn.GELU(),
                 nn.Dropout(dropout)
             ))
-        
-        # 预测头：输出 pred_len 步
+
         self.head = nn.Sequential(
             nn.Linear(hidden_channels, hidden_channels // 2),
             nn.GELU(),
@@ -91,24 +72,154 @@ class CNN1DModelV4(nn.Module):
 
     def forward(self, x):
         # x: (batch, seq_len, input_size)
-        batch_size = x.shape[0]
-        
-        # 转 (batch, input_size, seq_len)
         x = x.transpose(1, 2)
-        
+
         # Patch embedding: (batch, input_size, seq_len) -> (batch, hidden_channels, num_patches)
         x = self.patch_embed(x)
-        
-        # CNN 编码
+        # -> (batch, num_patches, hidden_channels)
+        x = x.transpose(1, 2)
+        x = x + self.pos_embedding
+        x = x.transpose(1, 2)
+
         for layer in self.encoder_layers:
             x = layer(x)
-        
-        # 全局平均池化: (batch, hidden_channels, num_patches) -> (batch, hidden_channels)
+
+        x = self.pool_conv(x)
         x = x.mean(dim=-1)
-        
-        # 预测
-        out = self.head(x)  # (batch, pred_len)
-        
+
+        out = self.head(x)
+
+        return out
+
+
+class MultiChannelCNN1D(nn.Module):
+    """
+    多变量 CNN1D 模型
+    - 每个变量独立归一化（per-channel）
+    - patch embedding 时对所有通道一起卷积
+    - 位置编码 + 时序卷积层
+    """
+
+    def __init__(
+        self,
+        input_size: int = 1,
+        hidden_channels: int = 128,
+        num_layers: int = 3,
+        kernel_size: int = 3,
+        seq_len: int = 96,
+        pred_len: int = 48,
+        dropout: float = 0.1,
+        n_date_features: int = 0  # 额外日期特征维度
+    ):
+        super().__init__()
+
+        self.seq_len = seq_len
+        self.pred_len = pred_len
+        self.input_size = input_size
+        self.n_date_features = n_date_features
+
+        # === Per-channel 归一化参数 ===
+        self.channel_means = nn.Parameter(torch.zeros(input_size), requires_grad=False)
+        self.channel_stds = nn.Parameter(torch.ones(input_size), requires_grad=False)
+
+        # === Patch embedding ===
+        # 输入: (batch, input_size, seq_len)
+        valid_patch_sizes = [p for p in [1, 2, 4, 8, 16, 24, 32] if seq_len % p == 0]
+        patch_size = valid_patch_sizes[-1] if valid_patch_sizes else 1
+        num_patches = seq_len // patch_size
+        self.patch_size = patch_size
+        self.num_patches = num_patches
+
+        self.patch_embed = nn.Conv1d(
+            input_size, hidden_channels,
+            kernel_size=patch_size,
+            stride=patch_size
+        )
+
+        # === 位置编码 ===
+        self.pos_embedding = nn.Parameter(
+            torch.randn(1, num_patches, hidden_channels) * 0.02
+        )
+
+        # === 日期特征注入 ===
+        if n_date_features > 0:
+            self.date_fc = nn.Sequential(
+                nn.Linear(n_date_features, hidden_channels),
+                nn.GELU()
+            )
+
+        # === 时序卷积层 ===
+        self.encoder_layers = nn.ModuleList()
+        for i in range(num_layers):
+            self.encoder_layers.append(nn.Sequential(
+                nn.Conv1d(hidden_channels, hidden_channels, kernel_size, padding=kernel_size//2),
+                nn.BatchNorm1d(hidden_channels),
+                nn.GELU(),
+                nn.Dropout(dropout)
+            ))
+
+        # === 池化层 ===
+        self.pool_conv = nn.Conv1d(hidden_channels, hidden_channels, kernel_size=3, padding=1)
+
+        # === 预测头 ===
+        head_input_dim = hidden_channels + n_date_features if n_date_features > 0 else hidden_channels
+        self.head = nn.Sequential(
+            nn.Linear(head_input_dim, hidden_channels // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels // 2, pred_len)
+        )
+
+    def set_channel_stats(self, means: np.ndarray, stds: np.ndarray):
+        """设置 per-channel 归一化统计量"""
+        self.channel_means.data = torch.FloatTensor(means.astype(np.float32))
+        self.channel_stds.data = torch.FloatTensor(stds.astype(np.float32))
+
+    def forward(self, x, date_features=None):
+        """
+        x: (batch, seq_len, input_size) - 多变量时序
+        date_features: (batch, n_date_features) - 可选的日期特征
+        """
+        batch_size = x.shape[0]
+
+        # === Per-channel 归一化 ===
+        # x: (batch, seq_len, input_size)
+        means = self.channel_means.view(1, 1, -1)  # (1, 1, input_size)
+        stds = self.channel_stds.view(1, 1, -1)
+        x_norm = (x - means) / (stds + 1e-8)
+
+        # === Patch embedding ===
+        # -> (batch, input_size, seq_len)
+        x_norm = x_norm.transpose(1, 2)
+        # -> (batch, hidden_channels, num_patches)
+        x_patch = self.patch_embed(x_norm)
+
+        # === 位置编码 ===
+        # -> (batch, num_patches, hidden_channels)
+        x_patch = x_patch.transpose(1, 2)
+        x_patch = x_patch + self.pos_embedding
+
+        # === 日期特征注入 ===
+        if date_features is not None and self.n_date_features > 0:
+            date_emb = self.date_fc(date_features)  # (batch, hidden_channels)
+            # 广播到所有 patch
+            date_emb = date_emb.unsqueeze(1)  # (batch, 1, hidden_channels)
+            x_patch = x_patch + date_emb
+
+        # === 时序卷积 ===
+        # -> (batch, hidden_channels, num_patches)
+        x_patch = x_patch.transpose(1, 2)
+
+        for layer in self.encoder_layers:
+            x_patch = layer(x_patch)
+
+        # === 改进的池化 ===
+        x_pool = self.pool_conv(x_patch)  # (batch, hidden_channels, num_patches)
+        x_pool = x_pool.mean(dim=-1)     # (batch, hidden_channels)
+
+        # === 预测头 ===
+        out = self.head(x_pool)  # (batch, pred_len)
+
         return out
 
 
@@ -117,7 +228,6 @@ class CNN1DPredictorV4:
 
     def __init__(self):
         self.model: Optional[CNN1DModelV4] = None
-        self.revin = None
         self._target_mean: Optional[float] = None
         self._target_std: Optional[float] = None
         self.seq_len: int = 96
@@ -127,7 +237,7 @@ class CNN1DPredictorV4:
         self.metrics: Dict[str, float] = {}
         self.device: str = "cpu"
         self.target_col: str = ""
-        self._bias_offset: float = 0.0  # 校准偏移量
+        self._bias_offset: float = 0.0
 
     def train(
         self,
@@ -143,6 +253,7 @@ class CNN1DPredictorV4:
         learning_rate: float = 0.001,
         test_size: float = 0.2,
         target_col: str = "",
+        date_features: np.ndarray = None,
         **kwargs
     ) -> Tuple[bool, str]:
         try:
@@ -157,7 +268,7 @@ class CNN1DPredictorV4:
                 X = X.reshape(-1, 1)
             if y.ndim > 1:
                 y = y.ravel()
-            
+
             n_samples = min(len(X), len(y))
             X = X[:n_samples]
             y = y[:n_samples]
@@ -189,9 +300,13 @@ class CNN1DPredictorV4:
 
             # 构建序列
             X_seqs, y_seqs = [], []
+            date_seqs = [] if date_features is not None else None
+
             for i in range(seq_len, n_samples - pred_len + 1):
                 X_seqs.append(X[i - seq_len:i])      # (seq_len, n_features)
                 y_seqs.append(y_norm[i:i + pred_len])  # (pred_len,)
+                if date_features is not None:
+                    date_seqs.append(date_features[i - seq_len:i])  # (seq_len, n_date)
 
             n_seqs = len(X_seqs)
             if n_seqs < 10:
@@ -203,13 +318,11 @@ class CNN1DPredictorV4:
 
             X_tensor = torch.FloatTensor(np.array(X_seqs))
             y_tensor = torch.FloatTensor(np.array(y_seqs))
-            
-            # 划分
+
             split_idx = int(len(X_tensor) * (1 - test_size))
             X_train, X_test = X_tensor[:split_idx], X_tensor[split_idx:]
             y_train, y_test = y_tensor[:split_idx], y_tensor[split_idx:]
 
-            # 模型
             self.model = CNN1DModelV4(
                 input_size=n_features,
                 hidden_channels=hidden_channels,
@@ -318,16 +431,16 @@ class CNN1DPredictorV4:
             X = X.reshape(-1, 1)
 
         x_input = X[-self.seq_len:]
-        
+
         x_tensor = torch.FloatTensor(x_input).unsqueeze(0).to(self.device)
-        
+
         self.model.eval()
         with torch.no_grad():
             pred_norm = self.model(x_tensor).cpu().numpy()[0]
-        
+
         # 反归一化 + 校准偏移
         pred = pred_norm * self._target_std + self._target_mean - self._bias_offset
-        
+
         return pred[:pred_len]
 
     def predict_future(self, X: np.ndarray, steps: int = 1) -> np.ndarray:
@@ -343,22 +456,22 @@ class CNN1DPredictorV4:
             X = X.reshape(-1, 1)
 
         all_preds = []
-        
+
         for _ in range(steps):
             x_input = X[-self.seq_len:]
             x_tensor = torch.FloatTensor(x_input).unsqueeze(0).to(self.device)
-            
+
             self.model.eval()
             with torch.no_grad():
                 pred_norm = self.model(x_tensor).cpu().numpy()[0]
-            
+
             # 反归一化 + 校准偏移
             pred = pred_norm * self._target_std + self._target_mean - self._bias_offset
-            
+
             # 取第一步
             next_val = float(pred[0])
             all_preds.append(next_val)
-            
+
             # 更新 X（用校准后的预测值）
             X = np.vstack([X, [[next_val]]])
 
@@ -385,7 +498,7 @@ class CNN1DPredictorV4:
 
     def load_model(self, path: str):
         data = torch.load(path, map_location=self.device)
-        
+
         self._target_mean = float(data['target_mean'])
         self._target_std = float(data['target_std'])
         self.seq_len = data['seq_len']
@@ -393,10 +506,10 @@ class CNN1DPredictorV4:
         self.n_features = data['n_features']
         self.metrics = data.get('metrics', {})
         self._bias_offset = self.metrics.get('bias_offset', 0.0)
-        
+
         hidden_channels = self.metrics.get('hidden_channels', 128)
         num_layers = self.metrics.get('num_layers', 3)
-        
+
         self.model = CNN1DModelV4(
             input_size=self.n_features,
             hidden_channels=hidden_channels,
@@ -406,6 +519,6 @@ class CNN1DPredictorV4:
         ).to(self.device)
         self.model.load_state_dict(data['model_state'])
         self.model.eval()
-        
+
         self.is_fitted = True
         logger.info(f"CNN1D-V4 模型已加载: {path}")

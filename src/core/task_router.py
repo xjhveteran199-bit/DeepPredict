@@ -257,7 +257,7 @@ class TaskRouter:
         """解释当前任务配置"""
         if not self.current_task:
             return "未配置任务"
-        
+
         return f"""
 📊 任务配置详情:
 ━━━━━━━━━━━━━━━━━━━━
@@ -267,3 +267,188 @@ class TaskRouter:
 • 特征工程建议: {', '.join(self.current_task.feature_engineering) if self.current_task.feature_engineering else '无特殊建议'}
 ━━━━━━━━━━━━━━━━━━━━
         """.strip()
+
+    def recommend_model(self, data_info: Dict, df=None) -> Dict:
+        """
+        基于数据分析自动推荐最适配的模型
+
+        分析维度：
+        - 样本量 → 模型复杂度上限
+        - 特征数 → 单变量/多变量
+        - 缺失率 → 数据质量
+        - 季节性检测 → 是否需要时序专属模型
+        - 趋势复杂度 → 简单趋势/复杂非线性
+
+        Returns:
+            {
+                'model': str,
+                'reason': str,
+                'confidence': float,  # 0-1
+                'alternatives': list,
+                'data_insights': list,
+                'params': dict
+            }
+        """
+        import numpy as np
+
+        insights = []
+        shape = data_info.get('shape', (0, 0))
+        n_samples = shape[0]
+        n_features = max(shape[1] - 1, 1)
+        numeric_cols = data_info.get('numeric_cols', [])
+        is_multivariate = n_features > 1
+        missing = data_info.get('missing', {})
+
+        # 缺失率分析
+        total_possible = n_samples * shape[1] if shape[1] > 0 else 1
+        total_missing = sum(missing.values()) if missing else 0
+        missing_rate = total_missing / total_possible
+        if missing_rate > 0.1:
+            insights.append(f"⚠️ 数据缺失率 {missing_rate:.1%}，建议预处理填充")
+        elif missing_rate > 0:
+            insights.append(f"✅ 数据缺失率低 ({missing_rate:.1%})")
+
+        has_seasonality = False
+        has_trend = False
+
+        if df is not None and len(df) > 50 and numeric_cols:
+            target_col = numeric_cols[0]
+            series = df[target_col].dropna()
+            if len(series) > 50:
+                try:
+                    mid = len(series) // 2
+                    if abs(series[:mid].mean() - series[mid:].mean()) > series.std() * 0.2:
+                        has_trend = True
+                        insights.append(f"📈 检测到趋势性（均值变化显著）")
+
+                    for lag in [7, 12, 24, 52]:
+                        if len(series) > lag * 2:
+                            vals1 = series.values[:-lag]
+                            vals2 = series.values[lag:]
+                            if len(vals1) > 1 and len(vals2) > 1 and np.std(vals1) > 0 and np.std(vals2) > 0:
+                                ac = np.corrcoef(vals1, vals2)[0, 1]
+                                if not np.isnan(ac) and abs(ac) > 0.5:
+                                    has_seasonality = True
+                                    insights.append(f"🔄 检测到季节性（lag={lag}, r={ac:.2f}）")
+                                    break
+                except Exception:
+                    pass
+
+        if not has_seasonality and not has_trend:
+            insights.append(f"📊 数据模式较平稳，无明显季节性/趋势")
+
+        # ========== 模型推荐 ==========
+
+        # 1. 数据量极小
+        if n_samples < 200:
+            insights.append(f"📦 数据量小（{n_samples}），深度学习易过拟合")
+            return {
+                'model': 'GradientBoosting',
+                'reason': f'数据量{n_samples}条，深度学习易过拟合。GradientBoosting稳健且无需大量数据。',
+                'confidence': 0.85,
+                'alternatives': ['RandomForest', 'LSTM（需增加数据）'],
+                'data_insights': insights,
+                'params': {'n_estimators': 100, 'max_depth': 5, 'learning_rate': 0.1}
+            }
+
+        # 2. 多变量
+        if is_multivariate and n_samples >= 200:
+            if has_trend or has_seasonality:
+                insights.append(f"🧠 多变量+时序特征 → CNN1D多变量版")
+                return {
+                    'model': 'CNN1D',
+                    'reason': f'多变量（{n_features}个特征）+ 检测到时序特征，CNN1D可同时处理多变量和时序模式。',
+                    'confidence': 0.75,
+                    'alternatives': ['GradientBoosting', 'LSTM'],
+                    'data_insights': insights,
+                    'params': {'seq_len': min(96, n_samples // 10), 'pred_len': min(24, n_samples // 20),
+                               'hidden_channels': 64, 'num_layers': 2, 'epochs': 30}
+                }
+            else:
+                insights.append(f"📊 多变量静态关系 → GradientBoosting")
+                return {
+                    'model': 'GradientBoosting',
+                    'reason': f'多变量（{n_features}个特征）无明显时序特征，GradientBoosting擅长捕捉变量间静态关系。',
+                    'confidence': 0.80,
+                    'alternatives': ['RandomForest', 'XGBoost'],
+                    'data_insights': insights,
+                    'params': {'n_estimators': 150, 'max_depth': 6, 'learning_rate': 0.1}
+                }
+
+        # 3. 单变量 + 季节性/趋势
+        if not is_multivariate and n_samples >= 200:
+            if has_seasonality and has_trend:
+                insights.append(f"🔄 季节性+趋势 → PatchTST")
+                return {
+                    'model': 'PatchTST',
+                    'reason': f'检测到季节性+趋势，PatchTST的Transformer架构对长程依赖建模能力强。',
+                    'confidence': 0.80,
+                    'alternatives': ['CNN1D', 'LSTM'],
+                    'data_insights': insights,
+                    'params': {'seq_len': 96, 'pred_len': 48, 'patch_size': 16,
+                               'd_model': 128, 'n_heads': 4, 'n_layers': 3, 'epochs': 30}
+                }
+            if has_seasonality:
+                insights.append(f"🔄 季节性时序 → CNN1D")
+                return {
+                    'model': 'CNN1D',
+                    'reason': f'检测到季节性，CNN1D Patch架构擅长提取局部周期模式。',
+                    'confidence': 0.78,
+                    'alternatives': ['PatchTST', 'LSTM'],
+                    'data_insights': insights,
+                    'params': {'seq_len': min(96, n_samples // 10), 'pred_len': min(24, n_samples // 20),
+                               'hidden_channels': 128, 'num_layers': 3, 'epochs': 50}
+                }
+            if has_trend:
+                insights.append(f"📈 趋势性时序 → LSTM")
+                return {
+                    'model': 'LSTM',
+                    'reason': f'检测到趋势，LSTM的记忆单元擅长处理长期趋势依赖。',
+                    'confidence': 0.75,
+                    'alternatives': ['CNN1D', 'GradientBoosting'],
+                    'data_insights': insights,
+                    'params': {'hidden_size': 64, 'num_layers': 2, 'seq_len': min(30, n_samples // 20),
+                               'epochs': 50, 'learning_rate': 0.001}
+                }
+            insights.append(f"📊 平稳时序 → CNN1D（默认最优）")
+            return {
+                'model': 'CNN1D',
+                'reason': f'数据无明显季节性/趋势，CNN1D适合快速建模。',
+                'confidence': 0.70,
+                'alternatives': ['GradientBoosting', 'LSTM'],
+                'data_insights': insights,
+                'params': {'seq_len': min(48, n_samples // 10), 'pred_len': min(12, n_samples // 20),
+                           'hidden_channels': 64, 'num_layers': 2, 'epochs': 30}
+            }
+
+        return {
+            'model': 'GradientBoosting',
+            'reason': '基于数据规模和特征综合评估',
+            'confidence': 0.60,
+            'alternatives': ['CNN1D', 'RandomForest'],
+            'data_insights': insights,
+            'params': {'n_estimators': 100, 'max_depth': 5, 'learning_rate': 0.1}
+        }
+
+    def explain_recommendation(self, rec: Dict) -> str:
+        """格式化推荐结果"""
+        stars = '★' * int(rec['confidence'] * 5) + '☆' * (5 - int(rec['confidence'] * 5))
+        lines = [
+            f"",
+            f"🤖 AI 模型推荐",
+            f"{'━' * 36}",
+            f"✅ 推荐模型：{rec['model']}",
+            f"   置信度：{stars} ({rec['confidence']:.0%})",
+            f"",
+            f"📝 推荐理由：",
+            f"   {rec['reason']}",
+            f"",
+            f"💡 数据洞察：",
+        ]
+        for insight in rec.get('data_insights', []):
+            lines.append(f"   {insight}")
+        lines.append(f"")
+        lines.append(f"🔄 备选模型：")
+        for alt in rec.get('alternatives', []):
+            lines.append(f"   • {alt}")
+        return '\n'.join(lines)

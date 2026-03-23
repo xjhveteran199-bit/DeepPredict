@@ -12,6 +12,12 @@ import numpy as np
 import logging
 from typing import Tuple, Dict, Optional
 
+# 期刊样式常量（避免循环导入）
+try:
+    from src.utils.plotting import JournalStyle
+except ImportError:
+    JournalStyle = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 
@@ -579,13 +585,16 @@ class CNN1DPredictorV4:
     def get_feature_importance(self) -> Dict[str, float]:
         return {}
 
-    def plot_loss_curve(self, save_path: str = None, show: bool = True):
+    def plot_loss_curve(self, save_path: str = None, show: bool = True,
+                        use_publication_style: bool = True, dpi: int = 300):
         """
-        绘制并展示训练损失曲线
+        绘制训练损失曲线
 
         Args:
             save_path: 保存路径（可选）
             show: 是否显示窗口
+            use_publication_style: 是否使用论文级样式（PublicationPlotter）
+            dpi: 图片分辨率
         """
         if not self.train_losses:
             logger.warning("No training losses recorded")
@@ -599,22 +608,34 @@ class CNN1DPredictorV4:
             logger.warning("Matplotlib not available")
             return
 
-        fig, ax = plt.subplots(figsize=(9, 5))
+        if use_publication_style:
+            try:
+                from src.utils.plotting import PublicationPlotter, JournalStyle
+                plotter = PublicationPlotter(style=JournalStyle.IEEE)
+                fig = plotter.plot_loss_curve(
+                    self.train_losses, self.val_losses,
+                    title=f'CNN1D-V4 Training Loss',
+                    save_path=save_path, dpi=dpi
+                )
+                if show:
+                    plt.show()
+                return fig
+            except Exception as e:
+                logger.warning(f"PublicationPlotter failed ({e}), falling back to basic style")
 
+        # 后备：基础样式（原实现）
+        fig, ax = plt.subplots(figsize=(9, 5))
         epochs_range = range(1, len(self.train_losses) + 1)
         ax.plot(epochs_range, self.train_losses, 'b-o', label='Train Loss',
                 linewidth=2, markersize=4, alpha=0.8)
         ax.plot(epochs_range, self.val_losses, 'r-s', label='Val Loss',
                 linewidth=2, markersize=4, alpha=0.8)
-
         ax.set_xlabel('Epoch', fontsize=12)
         ax.set_ylabel('Loss (MSE)', fontsize=12)
         ax.set_title(f'CNN1D-V4 Training Loss (Final Train={self.train_losses[-1]:.4f}, Val={self.val_losses[-1]:.4f})',
                     fontsize=13)
         ax.legend(fontsize=11)
         ax.grid(True, alpha=0.3)
-
-        # 标注最优 epoch
         best_val_epoch = int(np.argmin(self.val_losses)) + 1
         best_val = min(self.val_losses)
         ax.axvline(x=best_val_epoch, color='green', linestyle='--', alpha=0.6)
@@ -623,17 +644,75 @@ class CNN1DPredictorV4:
                    xytext=(best_val_epoch + max(epochs_range) * 0.1, best_val * 1.1),
                    fontsize=10,
                    arrowprops=dict(arrowstyle='->', color='green', alpha=0.6))
-
         fig.tight_layout()
-
         if save_path:
-            fig.savefig(save_path, dpi=150)
+            fig.savefig(save_path, dpi=dpi)
             logger.info(f"Loss curve saved: {save_path}")
-
         if show:
             plt.show()
-
         return fig
+
+    def plot_results(
+        self,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        y_pred_lower: Optional[np.ndarray] = None,
+        y_pred_upper: Optional[np.ndarray] = None,
+        export_dir: str = "./paper_figures",
+        style: str = JournalStyle.IEEE,
+        dpi: int = 300,
+        model_name: str = "CNN1D",
+    ) -> Dict[str, str]:
+        """
+        一键生成论文全套图表（预测图 + 残差分析 + 散点图 + 损失曲线 + 指标表）
+
+        Args:
+            y_true: 真实值
+            y_pred: 预测值
+            y_pred_lower / y_pred_upper: 置信区间（可选）
+            export_dir: 导出目录
+            style: 期刊样式 ('ieee' / 'nature' / 'science')
+            dpi: 图片分辨率（论文推荐 300）
+            model_name: 模型名称（用于图标题）
+
+        Returns:
+            {'fig_name': 'saved_path', ...}
+        """
+        try:
+            from src.utils.plotting import PublicationPlotter
+        except Exception:
+            logger.error("PublicationPlotter not available, install required packages")
+            return {}
+
+        style_map = {
+            'ieee': JournalStyle.IEEE,
+            'nature': JournalStyle.NATURE,
+            'science': JournalStyle.SCIENCE,
+            'bw': JournalStyle.BLACK_WHITE,
+        }
+        plotter = PublicationPlotter(style=style_map.get(style, JournalStyle.IEEE))
+
+        # 构建 metrics 字典
+        metrics_dict = {}
+        if self.metrics:
+            metrics_dict[model_name] = self.metrics
+        else:
+            from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+            rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+            mae = mean_absolute_error(y_true, y_pred)
+            r2 = r2_score(y_true, y_pred)
+            mape = np.mean(np.abs((y_true - y_pred) / (np.abs(y_true) + 1e-10))) * 100
+            metrics_dict[model_name] = {'R2': r2, 'RMSE': rmse, 'MAE': mae, 'MAPE': mape}
+
+        saved = plotter.export_all(
+            export_dir=export_dir, dpi=dpi, metrics=metrics_dict,
+            y_true=y_true, y_pred=y_pred,
+            train_losses=self.train_losses if self.train_losses else None,
+            val_losses=self.val_losses if self.val_losses else None,
+            model_name=model_name,
+        )
+        logger.info(f"Paper figures exported to {export_dir}: {list(saved.keys())}")
+        return saved
 
     def save_model(self, path: str):
         if self.model is None:

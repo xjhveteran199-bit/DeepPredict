@@ -1,4 +1,4 @@
-"""
+﻿"""
 DeepPredict Web 版 - Gradio 界面 v1.04
 改进：智能数据分析 + 用户引导
 """
@@ -297,9 +297,119 @@ predictor = None
 lstm_pred = None
 
 
+# ============ 图表模板函数 ============
+
+def select_plot_function(chart_requirement, hist, future_preds, target_col, steps_hist, steps_fut, std_val=None):
+    """根据用户描述选择图表模板（纯规则匹配，无需 AI）"""
+    if std_val is None:
+        std_val = np.std(future_preds) * 0.5
+    req = (chart_requirement or "").lower()
+    if any(kw in req for kw in ["双轴", "双y", "次坐标", "dual", "twin"]):
+        return plot_dual_axis(hist, future_preds, target_col, steps_hist, steps_fut)
+    elif any(kw in req for kw in ["置信", "误差", "上下界", "区间", "confidence", "band", "uncertainty"]):
+        return plot_with_confidence_band(hist, future_preds, target_col, steps_hist, steps_fut, std_val)
+    elif any(kw in req for kw in ["散点", "scatter"]):
+        return plot_scatter_with_line(hist, future_preds, target_col, steps_hist, steps_fut)
+    elif any(kw in req for kw in ["柱状", "bar", "柱形"]):
+        return plot_bar_forecast(hist, future_preds, target_col, steps_hist, steps_fut)
+    else:
+        return plot_standard_forecast(hist, future_preds, target_col, steps_hist, steps_fut)
+
+
+def plot_standard_forecast(hist, future_preds, target_col, steps_hist, steps_fut):
+    """标准折线图：蓝色历史 + 橙色预测"""
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(steps_hist, hist, color='#3B82F6', linewidth=2, label='历史数据')
+    ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--', label='预测')
+    ax.axvline(x=len(steps_hist) - 0.5, color='gray', linestyle=':', linewidth=1)
+    ax.set_xlabel('时间步', fontsize=11)
+    ax.set_ylabel(target_col, fontsize=11)
+    ax.set_title(f'{target_col} 趋势预测', fontsize=13, fontweight='bold')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
+def plot_dual_axis(hist, future_preds, target_col, steps_hist, steps_fut):
+    """双轴图：左轴历史，右轴预测（用于量纲不同场景）"""
+    import matplotlib.pyplot as plt
+    fig, ax1 = plt.subplots(figsize=(10, 4))
+    color1, color2 = '#3B82F6', '#FF6B2B'
+    ax1.set_xlabel('时间步', fontsize=11)
+    ax1.set_ylabel(f'{target_col} 历史', color=color1, fontsize=11)
+    ax1.plot(steps_hist, hist, color=color1, linewidth=2, label='历史数据')
+    ax1.tick_params(axis='y', labelcolor=color1)
+    ax2 = ax1.twinx()
+    ax2.set_ylabel(f'{target_col} 预测', color=color2, fontsize=11)
+    ax2.plot(steps_fut, future_preds, color=color2, linewidth=2, linestyle='--')
+    ax2.tick_params(axis='y', labelcolor=color2)
+    ax1.set_title(f'{target_col} 双轴趋势预测', fontsize=13, fontweight='bold')
+    plt.tight_layout()
+    return fig
+
+
+def plot_with_confidence_band(hist, future_preds, target_col, steps_hist, steps_fut, std_val=None):
+    """带置信区间的预测图"""
+    import matplotlib.pyplot as plt
+    if std_val is None:
+        std_val = np.std(future_preds) * 0.5
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(steps_hist, hist, color='#3B82F6', linewidth=2, label='历史数据')
+    ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--', label='预测')
+    ax.fill_between(steps_fut,
+                    [v - 1.96 * std_val for v in future_preds],
+                    [v + 1.96 * std_val for v in future_preds],
+                    color='#FF6B2B', alpha=0.2, label='95%置信区间')
+    ax.axvline(x=len(steps_hist) - 0.5, color='gray', linestyle=':', linewidth=1)
+    ax.set_xlabel('时间步', fontsize=11)
+    ax.set_ylabel(target_col, fontsize=11)
+    ax.set_title(f'{target_col} 趋势预测（含置信区间）', fontsize=13, fontweight='bold')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
+def plot_scatter_with_line(hist, future_preds, target_col, steps_hist, steps_fut):
+    """散点+折线组合图"""
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.scatter(steps_hist, hist, color='#3B82F6', s=20, zorder=3, label='历史数据（散点）')
+    ax.plot(steps_hist, hist, color='#3B82F6', linewidth=1.5, alpha=0.6)
+    ax.scatter(steps_fut, future_preds, color='#FF6B2B', s=30, marker='D', zorder=3, label='预测（散点）')
+    ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--')
+    ax.axvline(x=len(steps_hist) - 0.5, color='gray', linestyle=':', linewidth=1)
+    ax.set_xlabel('时间步', fontsize=11)
+    ax.set_ylabel(target_col, fontsize=11)
+    ax.set_title(f'{target_col} 趋势预测（散点图）', fontsize=13, fontweight='bold')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
+def plot_bar_forecast(hist, future_preds, target_col, steps_hist, steps_fut):
+    """柱状图（历史用柱状，预测用折线）"""
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(10, 4))
+    bar_width = 0.8
+    ax.bar(steps_hist, hist, color='#3B82F6', width=bar_width, label='历史数据', alpha=0.8)
+    ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--', label='预测', marker='o', markersize=4)
+    ax.axvline(x=len(steps_hist) - 0.5, color='gray', linestyle=':', linewidth=1)
+    ax.set_xlabel('时间步', fontsize=11)
+    ax.set_ylabel(target_col, fontsize=11)
+    ax.set_title(f'{target_col} 趋势预测（柱状图）', fontsize=13, fontweight='bold')
+    ax.legend()
+    ax.grid(True, alpha=0.3, axis='y')
+    plt.tight_layout()
+    return fig
+
+
 # ============ Gradio 界面 ============
 
-with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
+with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
     
     # 首页介绍
     with gr.Tab("🏠 首页介绍"):
@@ -422,7 +532,13 @@ with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
                         info="训练完成后自动预测未来N步的值，默认30步",
                         precision=0
                     )
-                
+
+                    chart_requirement = gr.Textbox(
+                        label="⑦ 描述你想要的图表（可选）",
+                        placeholder="示例：双轴图，左边显示温度走势，右边显示湿度\n用红色虚线标注预测区间上下界\n标注关键的拐点和异常值",
+                        lines=2
+                    )
+
                 # === 结果展示 ===
                 with gr.Column(scale=1):
                     gr.Markdown("### ⚙️ 任务配置预览")
@@ -442,9 +558,14 @@ with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
                     
                     gr.Markdown("### 🔍 特征重要性")
                     importance_out = gr.Markdown("")
-            
+
+                    gr.Markdown("### 📥 下载完整结果包")
+                    with gr.Row():
+                        download_btn = gr.Button("📥 下载结果包（PNG + CSV + JSON）", variant="secondary", size="lg", scale=2)
+                        download_file = gr.File(label="点击下载 zip", interactive=False, scale=1)
+
             gr.Markdown("---")
-            
+
             with gr.Row():
                 train_btn = gr.Button("🚀 开始训练", variant="primary", size="lg", scale=1)
             
@@ -540,11 +661,11 @@ with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
             gr.update(choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"], value="自动推荐")
         ]
     
-    def on_train(feature_col, target_col, predict_mode, model_select, requirement, n_future, prog=gr.Progress()):
+    def on_train(feature_col, target_col, predict_mode, model_select, requirement, n_future, chart_requirement, prog=gr.Progress()):
         global predictor, lstm_pred
         
         if data_loader.df is None:
-            return ["❌ 请先上传数据", "", "", None, "", ""]
+            return ["❌ 请先上传数据", "", "", None, "", "", ""]
         
         if not target_col:
             return ["❌ 请选择目标列 Y", "", "", None, "", ""]
@@ -577,7 +698,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
         # 获取数据信息
         numeric_cols = list(data_loader.df.select_dtypes(include=['number']).columns)
         if target_col not in numeric_cols:
-            return f"❌ 目标列 [{target_col}] 不是数值列", "", ""
+            return [f"❌ 目标列 [{target_col}] 不是数值列", "", "", None, "", "", ""]
         
         # 根据预测模式决定数据准备方式
         data_type = data_loader.data_structure['type'] if data_loader.data_structure else 'unknown'
@@ -735,7 +856,6 @@ with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
                 future_preds = lstm_pred.predict_future(X_last, steps=n_steps)
                 
                 if future_preds is not None and len(future_preds) > 0:
-                    # 1. 绘制趋势图
                     import matplotlib
                     matplotlib.use('Agg')
                     import matplotlib.pyplot as plt
@@ -744,19 +864,14 @@ with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
                     hist = y[-last_n:]
                     steps_hist = list(range(len(y) - last_n, len(y)))
                     steps_fut = list(range(len(y), len(y) + len(future_preds)))
+                    std_val = np.std(future_preds) * 0.5
                     
-                    fig, ax = plt.subplots(figsize=(10, 4))
-                    ax.plot(steps_hist, hist, color='#3B82F6', linewidth=2, label='历史数据')
-                    ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--', label='预测')
-                    ax.axvline(x=len(y) - 0.5, color='gray', linestyle=':', linewidth=1)
-                    ax.set_xlabel('时间步', fontsize=11)
-                    ax.set_ylabel(target_col, fontsize=11)
-                    ax.set_title(f'{target_col} 趋势预测（未来 {n_steps} 步）', fontsize=13, fontweight='bold')
-                    ax.legend()
-                    ax.grid(True, alpha=0.3)
-                    plt.tight_layout()
-                    forecast_plot = fig
-                    plt.close(fig)
+                    prog(0.65, desc="生成图表...")
+                    forecast_plot = select_plot_function(
+                        chart_requirement, hist, future_preds,
+                        target_col, steps_hist, steps_fut, std_val
+                    )
+                    plt.close(forecast_plot)
                     
                     # 2. 预测值表格
                     rows = []
@@ -815,19 +930,14 @@ with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
                     hist = y[-last_n:]
                     steps_hist = list(range(len(y) - last_n, len(y)))
                     steps_fut = list(range(len(y), len(y) + len(future_preds)))
+                    std_val = np.std(future_preds) * 0.5
                     
-                    fig, ax = plt.subplots(figsize=(10, 4))
-                    ax.plot(steps_hist, hist, color='#3B82F6', linewidth=2, label='历史数据')
-                    ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--', label='预测')
-                    ax.axvline(x=len(y) - 0.5, color='gray', linestyle=':', linewidth=1)
-                    ax.set_xlabel('时间步', fontsize=11)
-                    ax.set_ylabel(target_col, fontsize=11)
-                    ax.set_title(f'{target_col} 趋势预测（未来 {n_steps} 步）', fontsize=13, fontweight='bold')
-                    ax.legend()
-                    ax.grid(True, alpha=0.3)
-                    plt.tight_layout()
-                    forecast_plot = fig
-                    plt.close(fig)
+                    prog(0.65, desc="生成图表...")
+                    forecast_plot = select_plot_function(
+                        chart_requirement, hist, future_preds,
+                        target_col, steps_hist, steps_fut, std_val
+                    )
+                    plt.close(forecast_plot)
                     
                     rows = [f"  第 {i+1:3d} 步  →  **{val:.4f}**" for i, val in enumerate(future_preds[:30])]
                     forecast_text = f"**未来 {len(future_preds)} 步预测值（{target_col}）：**\n\n" + "\n".join(rows)
@@ -861,7 +971,88 @@ with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
                 forecast_text = f"趋势预测生成失败：{str(e)}"
                 summary_text = "*趋势预测生成失败，请查看上方训练结果*"
         
-        return msg, config, importance, forecast_plot, forecast_text, summary_text
+        # ===== 生成结果包（zip） =====
+        zip_path = ""
+        if forecast_plot is not None and future_preds is not None and len(future_preds) > 0:
+            try:
+                import matplotlib
+                matplotlib.use('Agg')
+                import matplotlib.pyplot as plt
+                import zipfile
+                import json
+                
+                output_dir = Path("outputs") / f"{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # 重新生成 fig 以便保存
+                std_val = np.std(future_preds) * 0.5
+                fig = select_plot_function(
+                    chart_requirement, hist, future_preds,
+                    target_col, steps_hist, steps_fut, std_val
+                )
+                fig.savefig(output_dir / "forecast.png", dpi=150, bbox_inches='tight')
+                plt.close(fig)
+                
+                # 保存预测数据 CSV
+                all_steps = steps_hist + steps_fut
+                all_vals = list(hist) + list(future_preds)
+                types_ = ['历史'] * len(steps_hist) + ['预测'] * len(steps_fut)
+                csv_df = pd.DataFrame({
+                    'step': all_steps,
+                    'type': types_,
+                    target_col: all_vals
+                })
+                csv_df.to_csv(output_dir / "forecast_data.csv", index=False, encoding='utf-8-sig')
+                
+                # 保存指标 JSON
+                pred_min = float(min(future_preds))
+                pred_max = float(max(future_preds))
+                pred_mean = float(sum(future_preds) / len(future_preds))
+                first_val = float(future_preds[0])
+                last_val = float(future_preds[-1])
+                change = last_val - first_val
+                pct = (change / abs(first_val) * 100) if first_val != 0 else 0
+                trend = "上升" if change > 0 else ("下降" if change < 0 else "平稳")
+                
+                metrics_dict = {
+                    'model': model_name,
+                    'target': target_col,
+                    'n_future': n_steps,
+                    'metrics': (predictor.metrics if predictor and predictor.is_fitted
+                                else (lstm_pred.metrics if hasattr(lstm_pred, 'metrics') else {})),
+                    'pred_range': [pred_min, pred_max],
+                    'pred_mean': pred_mean,
+                    'trend': trend,
+                    'change_pct': round(pct, 2)
+                }
+                with open(output_dir / "metrics.json", 'w', encoding='utf-8') as f:
+                    json.dump(metrics_dict, f, ensure_ascii=False, indent=2)
+                
+                # 打包 zip
+                zip_name = f"DeepPredict_{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}.zip"
+                zip_path = str(output_dir / zip_name)
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(output_dir / "forecast.png", arcname="forecast.png")
+                    zf.write(output_dir / "forecast_data.csv", arcname="forecast_data.csv")
+                    zf.write(output_dir / "metrics.json", arcname="metrics.json")
+                
+                prog(0.95, desc="打包完成")
+            except Exception as e:
+                zip_path = ""
+        
+        return msg, config, importance, forecast_plot, forecast_text, summary_text, zip_path
+    
+    def on_download(dummy, prog=gr.Progress()):
+        """手动触发下载最新结果包"""
+        import zipfile
+        from pathlib import Path
+        outputs = Path("outputs")
+        if not outputs.exists():
+            return ""
+        zips = sorted(outputs.rglob("DeepPredict_*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if zips:
+            return str(zips[0])
+        return ""
     
     def on_predict(file):
         global predictor, lstm_pred
@@ -901,8 +1092,13 @@ with gr.Blocks(title="DeepPredict v1.04 - 智能数据分析版") as demo:
     )
     train_btn.click(
         on_train,
-        inputs=[feature_col, target_col, predict_mode, model_select, requirement, n_future],
-        outputs=[result_out, config_out, importance_out, forecast_plot, forecast_out, summary_out]
+        inputs=[feature_col, target_col, predict_mode, model_select, requirement, n_future, chart_requirement],
+        outputs=[result_out, config_out, importance_out, forecast_plot, forecast_out, summary_out, download_file]
+    )
+    download_btn.click(
+        on_download,
+        inputs=[download_file],
+        outputs=[download_file]
     )
     predict_btn.click(on_predict, inputs=[predict_file], outputs=[predict_status, predict_out])
 

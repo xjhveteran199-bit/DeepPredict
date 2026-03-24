@@ -23,13 +23,20 @@
 - Python 3.12 + PyTorch 2.5.0（CPU）+ scikit-learn + Gradio 6.9.0
 - numpy 1.26.4 + shap 0.51.0
 
+## CNN1D 参数调优结果（2026-03-24）
+- **目标**: R² ≥ 0.55
+- **最优配置**: seq_len=180, epochs=100, hidden_channels=128, kernel_size=5
+- **R²**: 0.6538 ✅ (超出目标)
+- **RMSE**: 2.24
+- **测试数据集**: dp_temperature.csv (3650 样本)
+
 ## 当前测试结果（每日最低温度数据集）
 | 模型 | R² | RMSE | 状态 |
 |------|-----|------|------|
 | RandomForest | 0.610 | 2.55 | ✅ |
 | GradientBoosting | 0.611 | 2.55 | ✅ |
 | LSTM | 0.6258 | 2.61 | ✅ |
-| CNN1D | 0.6538 | 2.24 | ✅ |
+| CNN1D | 0.6538 | 2.24 | ✅ 已优化 |
 
 ## 在线数据调试结果（Airline Passengers 数据集）
 | 模型 | R² | RMSE | 数据集 | 状态 |
@@ -65,6 +72,7 @@
 ## 最近更新记录
 | 日期 | 更新内容 | Commit |
 |------|---------|--------|
+| 2026-03-24 | CNN1D 参数调优完成：seq_len=180, epochs=100, hidden=128, kernel=5, R²=0.6538 ≥ 0.55 | (待提交) |
 | 2026-03-24 | 在线数据调试通过：Airline Passengers 数据集 RandomForest R²=0.9648，PredictVisualizer 图表自动生成正常 | (待提交) |
 | 2026-03-24 | v1.13 新增 PredictVisualizer 可视化模块（时序图+置信区间+局部放大） | (本次) |
 | 2026-03-24 | v1.12 CNN1D优化 R²=0.6538 | (本次) |

@@ -1,4 +1,4 @@
-﻿"""
+"""
 DeepPredict Web 版 - Gradio 界面 v1.04
 改进：智能数据分析 + 用户引导
 """
@@ -966,6 +966,31 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
             gr.update(choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"], value="自动推荐")
         ]
     
+
+def plot_bland_altman(y_true, y_pred, title="Bland-Altman"):
+    y_true_arr = np.asarray(y_true).flatten()
+    y_pred_arr = np.asarray(y_pred).flatten()
+    mean_arr = (y_pred_arr + y_true_arr) / 2
+    diff_arr = y_pred_arr - y_true_arr
+    mean_diff = np.mean(diff_arr)
+    std_diff = np.std(diff_arr, ddof=1)
+    loa_lo = mean_diff - 1.96 * std_diff
+    loa_hi = mean_diff + 1.96 * std_diff
+    fig = Figure(figsize=(7, 5), dpi=150)
+    ax = fig.add_subplot(111)
+    ax.scatter(mean_arr, diff_arr, alpha=0.6, s=20, color="#4DBBD5")
+    ax.axhline(mean_diff, color="#E64B35", lw=2, label="Mean={:.4f}".format(mean_diff))
+    ax.axhline(loa_lo, color="#8491B4", lw=1.5, linestyle="--", label="95% LoA=[{:.4f}, {:.4f}]".format(loa_lo, loa_hi))
+    ax.axhline(loa_hi, color="#8491B4", lw=1.5, linestyle="--")
+    ax.axhline(0, color="gray", lw=1, linestyle=":", alpha=0.7)
+    ax.set_xlabel("(Predicted + Actual) / 2", fontsize=11)
+    ax.set_ylabel("Predicted - Actual", fontsize=11)
+    ax.set_title(title + " - Bland-Altman Analysis", fontsize=12)
+    ax.legend(fontsize=9, framealpha=0.3)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
     def on_train(feature_col, target_col, predict_mode, model_select, requirement, n_future_val, n_future_unit, chart_requirement, prog=gr.Progress()):
         global predictor, lstm_pred
         
@@ -1151,6 +1176,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
         # 在任何模型分支之前创建，确保所有代码路径都能统一保存
         import matplotlib
         matplotlib.use('Agg')
+        mpl.rcParams['text.usetex'] = False
         output_dir = Path("outputs") / f"{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
         output_dir.mkdir(parents=True, exist_ok=True)
         # ===== 生成未来预测 ======
@@ -1218,6 +1244,22 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                     # 立即保存为PNG并转换为路径字符串，避免返回matplotlib Figure导致Gradio postprocess错误
                     forecast_plot.savefig(output_dir / "forecast.png", dpi=300, bbox_inches='tight')
                     plt.close(forecast_plot)
+                    # Bland-Altman chart
+                    ba_png_path = None
+                    if predictor and hasattr(predictor, 'metrics') and predictor.metrics:
+                        try:
+                            split_idx = min(int(len(X_df) * 0.8), len(X_df) - 1)
+                            X_test_ba = X_df.iloc[split_idx:].select_dtypes(include=[np.number])
+                            y_test_ba = np.asarray(y_series.iloc[split_idx:]).flatten()
+                            if len(y_test_ba) > 0:
+                                X_scaled_ba = predictor.scaler.transform(X_test_ba.fillna(X_test_ba.median()))
+                                y_pred_ba = predictor.model.predict(X_scaled_ba)
+                                ba_fig = plot_bland_altman(y_test_ba, y_pred_ba, title=model_name)
+                                ba_png_path = str(output_dir / 'bland_altman.png')
+                                ba_fig.savefig(ba_png_path, dpi=150, bbox_inches='tight')
+                                plt.close(ba_fig)
+                        except Exception as e:
+                            print('BA chart error: {}'.format(e))
                     forecast_plot = str(output_dir / "forecast.png")
                     
                     # 2. 预测值表格（显示真实日期或数值时间轴）
@@ -1434,6 +1476,8 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                     zf.write(output_dir / "forecast.png", arcname="forecast.png")
                     zf.write(output_dir / "forecast_data.csv", arcname="forecast_data.csv")
                     zf.write(output_dir / "metrics.json", arcname="metrics.json")
+                    if ba_png_path:
+                        zf.write(ba_png_path, arcname='bland_altman.png')
                 
                 prog(0.95, desc="打包完成")
             except Exception as e:

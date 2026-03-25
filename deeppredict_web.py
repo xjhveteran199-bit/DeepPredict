@@ -10,6 +10,8 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 import matplotlib as mpl
 mpl.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
 mpl.rcParams['axes.unicode_minus'] = False  # 正常显示负号
+mpl.rcParams['savefig.dpi'] = 300  # 300 DPI 高清导出
+mpl.rcParams['figure.dpi'] = 150
 
 import gradio as gr
 import pandas as pd
@@ -247,8 +249,12 @@ class SklearnPredictor:
             if y_arr.ndim != 1:
                 return False, f"❌ y 必须是 1D 数组，当前 shape={np.asarray(y).shape}"
             
+            # P2 修复：只对数值列做 fillna，避免 Date/字符串列导致 TypeError
+            X_numeric = X.select_dtypes(include=[np.number])
+            if X_numeric.shape[1] == 0:
+                return False, "❌ 选中特征中没有数值列，无法训练", {}
             self.scaler = StandardScaler()
-            X_scaled = self.scaler.fit_transform(X.fillna(X.median()))
+            X_scaled = self.scaler.fit_transform(X_numeric.fillna(X_numeric.median()))
             
             if task_type == 'classification':
                 self.label_encoder = LabelEncoder()
@@ -269,8 +275,12 @@ class SklearnPredictor:
                 ('LogisticRegression', 'classification'): LogisticRegression,
             }
             
+            # P0 修复：LogisticRegression 是分类器，不能用于回归
+            if model_name == 'LogisticRegression' and task_type == 'regression':
+                return False, "❌ LogisticRegression 是分类器，不能用于回归任务。请选择 LinearRegression、Ridge 或 ElasticNet。", {}
+            
             key = (model_name, task_type)
-            model_cls = models.get(key, GradientBoostingRegressor)
+            model_cls = models.get(key)
             self.model = model_cls(**(params or {}))
             self.model.fit(X_train, y_train)
             
@@ -301,7 +311,8 @@ class SklearnPredictor:
     def predict(self, X):
         if not self.is_fitted:
             raise ValueError("请先训练模型")
-        X_scaled = self.scaler.transform(X.fillna(X.median()))
+        X_numeric = X.select_dtypes(include=[np.number])
+        X_scaled = self.scaler.transform(X_numeric.fillna(X_numeric.median()))
         pred = self.model.predict(X_scaled)
         if self.task_type == 'classification' and self.label_encoder:
             pred = self.label_encoder.inverse_transform(pred.astype(int))
@@ -1205,7 +1216,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                         target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, std_val, xlabel
                     )
                     # 立即保存为PNG并转换为路径字符串，避免返回matplotlib Figure导致Gradio postprocess错误
-                    forecast_plot.savefig(output_dir / "forecast.png", dpi=150, bbox_inches='tight')
+                    forecast_plot.savefig(output_dir / "forecast.png", dpi=300, bbox_inches='tight')
                     plt.close(forecast_plot)
                     forecast_plot = str(output_dir / "forecast.png")
                     
@@ -1295,7 +1306,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                         target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, std_val, xlabel
                     )
                     # 立即保存为PNG并转换为路径字符串，避免返回matplotlib Figure导致Gradio postprocess错误
-                    forecast_plot.savefig(output_dir / "forecast.png", dpi=150, bbox_inches='tight')
+                    forecast_plot.savefig(output_dir / "forecast.png", dpi=300, bbox_inches='tight')
                     plt.close(forecast_plot)
                     forecast_plot = str(output_dir / "forecast.png")
                     
@@ -1366,7 +1377,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                         chart_requirement, hist, future_preds,
                         target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, std_val, xlabel
                     )
-                    fig.savefig(forecast_png_path, dpi=150, bbox_inches='tight')
+                    fig.savefig(forecast_png_path, dpi=300, bbox_inches='tight')
                     plt.close(fig)
                     forecast_plot = forecast_png_path
                 # 注意：不再重复创建 output_dir，zip 使用已存在的那个
@@ -1512,7 +1523,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
 if __name__ == "__main__":
     # Railway / HuggingFace Spaces 用 PORT 环境变量
     import os
-    port = int(os.environ.get("PORT", 7860))
+    port = int(os.environ.get("PORT", 7861))
     print("=" * 60)
     print("  DeepPredict Web 版 v1.04 已启动！")
     print(f"  访问地址: http://127.0.0.1:{port}")

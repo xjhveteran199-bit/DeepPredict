@@ -6,14 +6,61 @@ DeepPredict Web 版 - Gradio 界面 v1.04
 import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
+# matplotlib 中文字体配置（解决 DejaVu Sans 缺失中文字形问题）
+import matplotlib as mpl
+mpl.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+mpl.rcParams['axes.unicode_minus'] = False  # 正常显示负号
+
 import gradio as gr
 import pandas as pd
 import numpy as np
 from pathlib import Path
 import sys
+from gradio.data_classes import ListFiles, FileData
 
 # 添加 src 路径
 sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+
+# ============ 工具函数 ============
+def extract_file_path(file_obj):
+    """从 Gradio 6.x File 组件返回值中提取文件路径字符串。
+    
+    Gradio 6.x 返回 ListFiles/FileData/dict/str 等多种格式，此函数统一处理。
+    """
+    if file_obj is None:
+        return None
+    # ListFiles (Gradio 6.x Pydantic root model，行为像 list 但不是 list 的子类)
+    if isinstance(file_obj, ListFiles):
+        file_obj = file_obj.root  # 取出内部的 list[FileData]
+    # 普通列表：取第一个元素（跳过空列表）
+    if isinstance(file_obj, list):
+        if len(file_obj) == 0:
+            return None
+        file_obj = file_obj[0]
+    # dict（序列化后的 FileData）
+    if isinstance(file_obj, dict):
+        path = file_obj.get('path', '')
+        if path and Path(path).is_file():
+            return str(path)
+        return None
+    # FileData Pydantic 对象
+    if hasattr(file_obj, 'path'):
+        path = str(file_obj.path)
+        if Path(path).is_file():
+            return path
+        # 如果 path 是目录（Gradio 缓存目录），尝试获取 orig_name
+        if hasattr(file_obj, 'orig_name') and file_obj.orig_name:
+            # 缓存目录下的实际文件
+            return str(Path(path).parent / file_obj.orig_name)
+        return None
+    # 已经是字符串：检查是否是有效文件
+    if isinstance(file_obj, str):
+        p = Path(file_obj)
+        if p.is_file():
+            return str(p)
+        return None
+    return None
 
 
 # ============ 核心模块 ============
@@ -297,33 +344,195 @@ predictor = None
 lstm_pred = None
 
 
+# ============ 时间轴构建工具 ============
+
+def build_datetime_steps(df, feature_col, n_hist, n_fut):
+    """
+    从 datetime 列构建真实时间轴，返回：
+    steps_*, xtick_*, date_fmt, first_date, first_future_date
+    steps_* = 数字索引（用于绘图定位）
+    xtick_* = 格式化日期字符串（用于 X 轴标签）
+    """
+    import pandas as pd
+    import numpy as np
+
+    date_series = None
+    date_fmt = "%Y-%m-%d"
+    freq = "MS"
+
+    if feature_col and feature_col in df.columns:
+        try:
+            parsed = pd.to_datetime(df[feature_col], errors='coerce')
+            if parsed.notna().sum() > max(5, len(df) * 0.3):
+                # 如果解析出来的日期全在1975年之前且跨度<1天，说明是数值列误识别为日期
+                parsed_years = parsed.dropna().dt.year
+                parsed_range = (parsed.dropna().max() - parsed.dropna().min()).total_seconds()
+                if len(parsed_years) > 0 and parsed_years.max() <= 1975 and parsed_range < 86400:
+                    # 数值列（分钟/秒）误识别为日期，退回数值模式
+                    pass
+                else:
+                    date_series = parsed
+                    deltas = parsed.diff().dropna()
+                    if len(deltas) > 0:
+                        days_median = deltas.median().days
+                        if days_median <= 1:
+                            freq = "D"
+                            date_fmt = "%Y-%m-%d"
+                        elif days_median <= 10:
+                            freq = f"{int(days_median)}D"
+                            date_fmt = "%Y-%m-%d"
+                        elif days_median <= 35:
+                            freq = "MS"
+                            date_fmt = "%Y-%m"
+                        else:
+                            freq = "YS"
+                            date_fmt = "%Y"
+                    else:
+                        freq = "MS"
+                        date_fmt = "%Y-%m"
+        except Exception:
+            pass
+
+    last_n = min(n_hist, len(date_series)) if date_series is not None else 0
+
+    if date_series is not None and last_n > 2:
+        # 历史
+        last_dates = date_series.iloc[-last_n:].reset_index(drop=True)
+        start_idx = len(date_series) - last_n
+        steps_hist = list(range(start_idx, start_idx + last_n))
+        step = max(1, last_n // 12)
+        xtick_hist = [d.strftime(date_fmt) if i % step == 0 else "" for i, d in enumerate(last_dates)]
+
+        # 未来
+        last_date = date_series.iloc[-1]
+        try:
+            future_dates = pd.date_range(start=last_date, periods=n_fut + 1, freq=freq)[1:]
+        except Exception:
+            future_dates = pd.date_range(start=last_date, periods=n_fut + 1, freq="MS")[1:]
+        steps_fut = list(range(len(date_series), len(date_series) + n_fut))
+        step_fut = max(1, n_fut // 12)
+        xtick_fut = [d.strftime(date_fmt) if i % step_fut == 0 else "" for i, d in enumerate(future_dates)]
+
+        first_date = last_dates.iloc[0]
+        first_fut = future_dates[0] if len(future_dates) > 0 else None
+        return steps_hist, steps_fut, xtick_hist, xtick_fut, date_fmt, first_date, first_fut
+    else:
+        # ===== 数值/序号模式：直接用时间值作刻度位置，避免索引偏移 =====
+        col_vals = None
+        if feature_col and feature_col in df.columns:
+            try:
+                col_vals = pd.to_numeric(df[feature_col], errors='coerce')
+            except Exception:
+                col_vals = None
+
+        if col_vals is not None and col_vals.notna().sum() > len(df) * 0.5:
+            # 推断采样间隔
+            vals = col_vals.dropna().values
+            val_step = 1.0
+            if len(vals) >= 2:
+                diffs = np.diff(vals)
+                diffs = diffs[diffs > 0]
+                if len(diffs) > 0:
+                    val_step = float(np.median(diffs))
+
+            last_n = min(n_hist, len(col_vals))
+            last_vals = col_vals.iloc[-last_n:].reset_index(drop=True)
+            last_time = float(last_vals.iloc[-1])
+            first_time = float(last_vals.iloc[0])
+
+            # 历史：用实际时间值作为 X 轴位置
+            steps_hist = list(last_vals.values)  # 直接用时间值
+            # 均匀取刻度（~6个历史标签，~8个未来标签，避免X轴重叠）
+            hist_step = max(1, last_n // 6)  # ~6 labels for historical
+            xtick_hist = [f"{last_vals.iloc[i]:.1f}" if i % hist_step == 0 else "" for i in range(last_n)]
+
+            # 未来：也用实际时间值
+            future_vals = [last_time + val_step * (i + 1) for i in range(n_fut)]
+            steps_fut = future_vals  # 直接用时间值，不再用行号
+            fut_step = max(1, n_fut // 8)  # ~8 labels for future
+            xtick_fut = [f"{future_vals[i]:.1f}" if i % fut_step == 0 else "" for i in range(n_fut)]
+
+            xlabel = feature_col
+            return steps_hist, steps_fut, xtick_hist, xtick_fut, xlabel, last_vals.iloc[0], future_vals[0] if future_vals else None
+        else:
+            # 完全没有可用列：退化为序号
+            steps_hist = list(range(0, n_hist))
+            steps_fut = list(range(n_hist, n_hist + n_fut))
+            step = max(1, n_hist // 12)
+            xtick_hist = [str(i) if i % step == 0 else "" for i in steps_hist]
+            step_fut = max(1, n_fut // 12)
+            xtick_fut = [str(i) if i % step_fut == 0 else "" for i in steps_fut]
+            return steps_hist, steps_fut, xtick_hist, xtick_fut, None, None, None
+
+
+def _apply_xticks(ax, steps_hist, steps_fut, xtick_hist, xtick_fut, has_datetime):
+    """统一设置 X 轴刻度标签（数字或真实日期）"""
+    import matplotlib.pyplot as plt
+    all_steps = steps_hist + steps_fut
+    all_labels = xtick_hist + xtick_fut
+    if has_datetime:
+        # 只显示部分标签避免拥挤
+        ax.set_xticks(all_steps)
+        ax.set_xticklabels(all_labels, rotation=30, ha='right', fontsize=8)
+    else:
+        ax.set_xlabel('时间步', fontsize=11)
+
+
 # ============ 图表模板函数 ============
 
-def select_plot_function(chart_requirement, hist, future_preds, target_col, steps_hist, steps_fut, std_val=None):
+def select_plot_function(chart_requirement, hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist=None, xtick_fut=None, std_val=None, xlabel=None):
     """根据用户描述选择图表模板（纯规则匹配，无需 AI）"""
-    if std_val is None:
-        std_val = np.std(future_preds) * 0.5
+    # 只有 date_fmt 是真正的日期格式字符串（如 "%Y-%m"）才算 datetime 模式
+    is_date_fmt = xlabel and '%' in str(xlabel)
+    has_datetime = xtick_hist is not None and any(xtick_hist) and is_date_fmt
     req = (chart_requirement or "").lower()
     if any(kw in req for kw in ["双轴", "双y", "次坐标", "dual", "twin"]):
-        return plot_dual_axis(hist, future_preds, target_col, steps_hist, steps_fut)
+        return plot_dual_axis(hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, xlabel)
     elif any(kw in req for kw in ["置信", "误差", "上下界", "区间", "confidence", "band", "uncertainty"]):
-        return plot_with_confidence_band(hist, future_preds, target_col, steps_hist, steps_fut, std_val)
+        return plot_with_confidence_band(hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, std_val, xlabel)
     elif any(kw in req for kw in ["散点", "scatter"]):
-        return plot_scatter_with_line(hist, future_preds, target_col, steps_hist, steps_fut)
+        return plot_scatter_with_line(hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, xlabel)
     elif any(kw in req for kw in ["柱状", "bar", "柱形"]):
-        return plot_bar_forecast(hist, future_preds, target_col, steps_hist, steps_fut)
+        return plot_bar_forecast(hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, xlabel)
     else:
-        return plot_standard_forecast(hist, future_preds, target_col, steps_hist, steps_fut)
+        return plot_standard_forecast(hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, xlabel)
 
 
-def plot_standard_forecast(hist, future_preds, target_col, steps_hist, steps_fut):
-    """标准折线图：蓝色历史 + 橙色预测"""
+def plot_standard_forecast(hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist=None, xtick_fut=None, xlabel=None):
+    """标准折线图：蓝色历史 + 橙色预测，支持真实日期/数值时间轴"""
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(10, 4))
+    is_date_fmt = xlabel and '%' in str(xlabel)
+    has_xtick = xtick_hist is not None and any(xtick_hist)
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    # 绘制分隔线（历史与预测的边界）
+    if has_xtick and steps_hist and steps_fut:
+        # 数值模式或日期模式：分隔线在最后一个历史时间点
+        boundary = float(steps_hist[-1])
+        ax.axvline(x=boundary, color='gray', linestyle=':', linewidth=1.5, label='预测起点')
+    elif not has_xtick:
+        ax.axvline(x=len(steps_hist) - 0.5, color='gray', linestyle=':', linewidth=1)
+
     ax.plot(steps_hist, hist, color='#3B82F6', linewidth=2, label='历史数据')
     ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--', label='预测')
-    ax.axvline(x=len(steps_hist) - 0.5, color='gray', linestyle=':', linewidth=1)
-    ax.set_xlabel('时间步', fontsize=11)
+
+    # X轴刻度：只显示有标签的位置，彻底避免重叠
+    if has_xtick:
+        # 历史部分：取所有非空标签的步进
+        hist_ticks = [(int(i), xtick_hist[i]) for i in range(len(xtick_hist)) if xtick_hist[i]]
+        fut_ticks = [(len(steps_hist) + i, xtick_fut[i]) for i in range(len(xtick_fut)) if xtick_fut[i]]
+        all_ticks = hist_ticks + fut_ticks
+        if all_ticks:
+            tick_pos, tick_lab = zip(*all_ticks)
+            plt.xticks(tick_pos, tick_lab, rotation=30, ha='right', fontsize=8)
+    elif not is_date_fmt:
+        ax.set_xlabel('时间步', fontsize=11)
+
+    if is_date_fmt:
+        ax.set_xlabel('日期', fontsize=11)
+    elif xlabel:
+        ax.set_xlabel(str(xlabel), fontsize=11)
+
     ax.set_ylabel(target_col, fontsize=11)
     ax.set_title(f'{target_col} 趋势预测', fontsize=13, fontweight='bold')
     ax.legend()
@@ -332,12 +541,35 @@ def plot_standard_forecast(hist, future_preds, target_col, steps_hist, steps_fut
     return fig
 
 
-def plot_dual_axis(hist, future_preds, target_col, steps_hist, steps_fut):
-    """双轴图：左轴历史，右轴预测（用于量纲不同场景）"""
+def plot_dual_axis(hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist=None, xtick_fut=None, xlabel=None):
+    """双轴图：左轴历史，右轴预测"""
     import matplotlib.pyplot as plt
-    fig, ax1 = plt.subplots(figsize=(10, 4))
+    is_date_fmt = xlabel and '%' in str(xlabel)
+    has_xtick = xtick_hist is not None and any(xtick_hist)
+    fig, ax1 = plt.subplots(figsize=(12, 5))
     color1, color2 = '#3B82F6', '#FF6B2B'
-    ax1.set_xlabel('时间步', fontsize=11)
+
+    # 分隔线
+    if has_xtick and steps_hist and steps_fut:
+        boundary = float(steps_hist[-1])
+        ax1.axvline(x=boundary, color='gray', linestyle=':', linewidth=1.5)
+
+    # X轴刻度（精确控制）
+    if has_xtick:
+        hist_ticks = [(i, xtick_hist[i]) for i in range(len(xtick_hist)) if xtick_hist[i]]
+        fut_ticks = [(len(steps_hist) + i, xtick_fut[i]) for i in range(len(xtick_fut)) if xtick_fut[i]]
+        all_ticks = hist_ticks + fut_ticks
+        if all_ticks:
+            tp, tl = zip(*all_ticks)
+            plt.xticks(tp, tl, rotation=45, ha='right', fontsize=8)
+
+    if is_date_fmt:
+        ax1.set_xlabel('日期', fontsize=11)
+    elif xlabel:
+        ax1.set_xlabel(str(xlabel), fontsize=11)
+    else:
+        ax1.set_xlabel('时间步', fontsize=11)
+
     ax1.set_ylabel(f'{target_col} 历史', color=color1, fontsize=11)
     ax1.plot(steps_hist, hist, color=color1, linewidth=2, label='历史数据')
     ax1.tick_params(axis='y', labelcolor=color1)
@@ -350,12 +582,14 @@ def plot_dual_axis(hist, future_preds, target_col, steps_hist, steps_fut):
     return fig
 
 
-def plot_with_confidence_band(hist, future_preds, target_col, steps_hist, steps_fut, std_val=None):
-    """带置信区间的预测图"""
+def plot_with_confidence_band(hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist=None, xtick_fut=None, std_val=None, xlabel=None):
+    """带置信区间的预测图，支持真实日期"""
     import matplotlib.pyplot as plt
     if std_val is None:
         std_val = np.std(future_preds) * 0.5
-    fig, ax = plt.subplots(figsize=(10, 4))
+    is_date_fmt = xlabel and '%' in str(xlabel)
+    has_xtick = xtick_hist is not None and any(xtick_hist)
+    fig, ax = plt.subplots(figsize=(11, 4))
     ax.plot(steps_hist, hist, color='#3B82F6', linewidth=2, label='历史数据')
     ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--', label='预测')
     ax.fill_between(steps_fut,
@@ -363,7 +597,17 @@ def plot_with_confidence_band(hist, future_preds, target_col, steps_hist, steps_
                     [v + 1.96 * std_val for v in future_preds],
                     color='#FF6B2B', alpha=0.2, label='95%置信区间')
     ax.axvline(x=len(steps_hist) - 0.5, color='gray', linestyle=':', linewidth=1)
-    ax.set_xlabel('时间步', fontsize=11)
+    if has_xtick:
+        all_steps = steps_hist + steps_fut
+        all_labels = xtick_hist + xtick_fut
+        ax.set_xticks(all_steps)
+        ax.set_xticklabels(all_labels, rotation=35, ha='right', fontsize=8)
+    if is_date_fmt:
+        ax.set_xlabel('日期', fontsize=11)
+    elif xlabel:
+        ax.set_xlabel(str(xlabel), fontsize=11)
+    else:
+        ax.set_xlabel('时间步', fontsize=11)
     ax.set_ylabel(target_col, fontsize=11)
     ax.set_title(f'{target_col} 趋势预测（含置信区间）', fontsize=13, fontweight='bold')
     ax.legend()
@@ -372,16 +616,28 @@ def plot_with_confidence_band(hist, future_preds, target_col, steps_hist, steps_
     return fig
 
 
-def plot_scatter_with_line(hist, future_preds, target_col, steps_hist, steps_fut):
-    """散点+折线组合图"""
+def plot_scatter_with_line(hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist=None, xtick_fut=None, xlabel=None):
+    """散点+折线组合图，支持真实日期"""
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(10, 4))
+    is_date_fmt = xlabel and '%' in str(xlabel)
+    has_xtick = xtick_hist is not None and any(xtick_hist)
+    fig, ax = plt.subplots(figsize=(11, 4))
     ax.scatter(steps_hist, hist, color='#3B82F6', s=20, zorder=3, label='历史数据（散点）')
     ax.plot(steps_hist, hist, color='#3B82F6', linewidth=1.5, alpha=0.6)
     ax.scatter(steps_fut, future_preds, color='#FF6B2B', s=30, marker='D', zorder=3, label='预测（散点）')
     ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--')
     ax.axvline(x=len(steps_hist) - 0.5, color='gray', linestyle=':', linewidth=1)
-    ax.set_xlabel('时间步', fontsize=11)
+    if has_xtick:
+        all_steps = steps_hist + steps_fut
+        all_labels = xtick_hist + xtick_fut
+        ax.set_xticks(all_steps)
+        ax.set_xticklabels(all_labels, rotation=35, ha='right', fontsize=8)
+    if is_date_fmt:
+        ax.set_xlabel('日期', fontsize=11)
+    elif xlabel:
+        ax.set_xlabel(str(xlabel), fontsize=11)
+    else:
+        ax.set_xlabel('时间步', fontsize=11)
     ax.set_ylabel(target_col, fontsize=11)
     ax.set_title(f'{target_col} 趋势预测（散点图）', fontsize=13, fontweight='bold')
     ax.legend()
@@ -390,15 +646,27 @@ def plot_scatter_with_line(hist, future_preds, target_col, steps_hist, steps_fut
     return fig
 
 
-def plot_bar_forecast(hist, future_preds, target_col, steps_hist, steps_fut):
-    """柱状图（历史用柱状，预测用折线）"""
+def plot_bar_forecast(hist, future_preds, target_col, steps_hist, steps_fut, xtick_hist=None, xtick_fut=None, xlabel=None):
+    """柱状图（历史用柱状，预测用折线），支持真实日期"""
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(10, 4))
+    is_date_fmt = xlabel and '%' in str(xlabel)
+    has_xtick = xtick_hist is not None and any(xtick_hist)
+    fig, ax = plt.subplots(figsize=(11, 4))
     bar_width = 0.8
     ax.bar(steps_hist, hist, color='#3B82F6', width=bar_width, label='历史数据', alpha=0.8)
     ax.plot(steps_fut, future_preds, color='#FF6B2B', linewidth=2, linestyle='--', label='预测', marker='o', markersize=4)
     ax.axvline(x=len(steps_hist) - 0.5, color='gray', linestyle=':', linewidth=1)
-    ax.set_xlabel('时间步', fontsize=11)
+    if has_xtick:
+        all_steps = steps_hist + steps_fut
+        all_labels = xtick_hist + xtick_fut
+        ax.set_xticks(all_steps)
+        ax.set_xticklabels(all_labels, rotation=35, ha='right', fontsize=8)
+    if is_date_fmt:
+        ax.set_xlabel('日期', fontsize=11)
+    elif xlabel:
+        ax.set_xlabel(str(xlabel), fontsize=11)
+    else:
+        ax.set_xlabel('时间步', fontsize=11)
     ax.set_ylabel(target_col, fontsize=11)
     ax.set_title(f'{target_col} 趋势预测（柱状图）', fontsize=13, fontweight='bold')
     ax.legend()
@@ -472,8 +740,8 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                     gr.Markdown("### 1️⃣ 上传数据文件")
                     file_input = gr.File(label="点击上传 CSV 文件", file_types=[".csv"], height=100)
                     
-                    gr.Markdown("### 📊 数据预览")
-                    data_preview = gr.HTML(label="")
+                    gr.Markdown("### 📊 数据预览（均匀采样200行，覆盖全部时间范围）")
+                    data_preview = gr.DataFrame(label="", max_height=400, wrap=True, column_widths=None, buttons=['fullscreen', 'copy'], show_search='filter')
                 
                 # === 数据分析 ===
                 with gr.Column(scale=1):
@@ -526,12 +794,21 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                         lines=2
                     )
                     
-                    n_future = gr.Number(
-                        label="⑥ 预测未来多少步",
-                        value=30,
-                        info="训练完成后自动预测未来N步的值，默认30步",
-                        precision=0
-                    )
+                    with gr.Row():
+                        n_future_val = gr.Number(
+                            label="⑥ 预测未来时间长度",
+                            value=10,
+                            info="数值，默认10",
+                            precision=1,
+                            scale=2
+                        )
+                        n_future_unit = gr.Dropdown(
+                            label="",
+                            choices=["分钟", "小时", "天", "秒"],
+                            value="分钟",
+                            scale=1,
+                            min_width=80
+                        )
 
                     chart_requirement = gr.Textbox(
                         label="⑦ 描述你想要的图表（可选）",
@@ -548,7 +825,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                     result_out = gr.Textbox(label="", lines=6, interactive=False)
                     
                     gr.Markdown("### 📈 未来趋势预测")
-                    forecast_plot = gr.Plot(label="趋势预测图（蓝色=历史，橙色=预测）")
+                    forecast_plot = gr.Image(label="趋势预测图（蓝色=历史，橙色=预测）")
                     
                     gr.Markdown("### 🔮 未来预测值")
                     forecast_out = gr.Textbox(label="", lines=10, interactive=False)
@@ -598,11 +875,28 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                 gr.update(choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"], value="自动推荐")
             ]
         
-        file_path = file.name
+        file_path = extract_file_path(file)
+        if not file_path:
+            return [None] * 7 + [
+                "**文件路径无效**",
+                "**上传失败**",
+                "**上传后自动识别列类型**",
+                gr.update(choices=[]),
+                gr.update(choices=[]),
+                "**推荐模型**：上传失败",
+                gr.update(choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"], value="自动推荐")
+            ]
         success, msg = data_loader.load_csv(file_path)
         
         if success:
-            preview = data_loader.df.head(20).to_html(max_cols=10, classes='table table-striped')
+            # 均匀采样200行：覆盖完整时间范围（10~50min），而非只取前200行（仅覆盖10~13min）
+            n_total = len(data_loader.df)
+            n_sample = 200
+            if n_total <= n_sample:
+                preview = data_loader.df.copy()
+            else:
+                indices = np.linspace(0, n_total - 1, n_sample, dtype=int)
+                preview = data_loader.df.iloc[indices].reset_index(drop=True)
             info = data_loader.get_info()
             structure_info = data_loader.get_structure_explanation()
             
@@ -661,7 +955,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
             gr.update(choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"], value="自动推荐")
         ]
     
-    def on_train(feature_col, target_col, predict_mode, model_select, requirement, n_future, chart_requirement, prog=gr.Progress()):
+    def on_train(feature_col, target_col, predict_mode, model_select, requirement, n_future_val, n_future_unit, chart_requirement, prog=gr.Progress()):
         global predictor, lstm_pred
         
         if data_loader.df is None:
@@ -842,11 +1136,49 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                 top10 = sorted(imp.items(), key=lambda x: x[1], reverse=True)[:10]
                 importance = "\n".join([f"`{k}`: {v:.4f}" for k, v in top10])
         
+        # ===== 统一保存图表的目录 ======
+        # 在任何模型分支之前创建，确保所有代码路径都能统一保存
+        import matplotlib
+        matplotlib.use('Agg')
+        output_dir = Path("outputs") / f"{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
+        output_dir.mkdir(parents=True, exist_ok=True)
         # ===== 生成未来预测 ======
         forecast_plot = None
         forecast_text = ""
         summary_text = ""
-        n_steps = max(1, int(n_future or 30))
+        # ===== 时间长度 → 步数转换 =====
+        time_val = float(n_future_val) if n_future_val is not None else 10.0
+        unit = n_future_unit or "分钟"
+        # 根据单位换算成"分钟"量级
+        if unit == "小时":
+            time_min = time_val * 60
+        elif unit == "天":
+            time_min = time_val * 60 * 24
+        elif unit == "秒":
+            time_min = time_val / 60.0
+        else:  # 分钟
+            time_min = time_val
+        # 用时间列的采样间隔估算步数
+        if feature_col and feature_col in data_loader.df.columns:
+            try:
+                col_vals = pd.to_numeric(data_loader.df[feature_col], errors='coerce').dropna()
+                if len(col_vals) >= 2:
+                    intervals = col_vals.diff().dropna()
+                    avg_interval = intervals.mean()
+                    if avg_interval > 0:
+                        n_steps = max(1, int(round(time_min / avg_interval)))
+                    else:
+                        n_steps = max(1, int(time_val * 10))
+                else:
+                    n_steps = max(1, int(time_val * 10))
+            except Exception:
+                n_steps = max(1, int(time_val * 10))
+        else:
+            n_steps = max(1, int(time_val * 10))
+        n_steps = min(n_steps, 2000)  # 上限防止内存问题
+        # 预初始化的绘图变量（供 zip 导出使用）
+        steps_hist = steps_fut = xtick_hist = xtick_fut = None
+        hist = None
         
         if success and lstm_pred and lstm_pred.is_fitted:
             try:
@@ -862,22 +1194,46 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                     
                     last_n = min(100, len(y))
                     hist = y[-last_n:]
-                    steps_hist = list(range(len(y) - last_n, len(y)))
-                    steps_fut = list(range(len(y), len(y) + len(future_preds)))
+                    # 构建真实时间轴（支持日期列和数值列）
+                    d_steps = build_datetime_steps(data_loader.df, feature_col, last_n, len(future_preds))
+                    steps_hist, steps_fut, xtick_hist, xtick_fut, xlabel, first_date, first_fut = d_steps
                     std_val = np.std(future_preds) * 0.5
                     
                     prog(0.65, desc="生成图表...")
                     forecast_plot = select_plot_function(
                         chart_requirement, hist, future_preds,
-                        target_col, steps_hist, steps_fut, std_val
+                        target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, std_val, xlabel
                     )
+                    # 立即保存为PNG并转换为路径字符串，避免返回matplotlib Figure导致Gradio postprocess错误
+                    forecast_plot.savefig(output_dir / "forecast.png", dpi=150, bbox_inches='tight')
                     plt.close(forecast_plot)
+                    forecast_plot = str(output_dir / "forecast.png")
                     
-                    # 2. 预测值表格
+                    # 2. 预测值表格（显示真实日期或数值时间轴）
                     rows = []
-                    for i, val in enumerate(future_preds):
-                        rows.append(f"  第 {i+1:3d} 步  →  **{val:.4f}**")
-                    forecast_text = f"**未来 {len(future_preds)} 步预测值（{target_col}）：**\n\n" + "\n".join(rows[:30])
+                    is_datetime_mode = xlabel and '%' in str(xlabel)
+                    if is_datetime_mode and first_fut is not None:
+                        # 日期时间模式
+                        freq = "MS"
+                        try:
+                            future_dates = pd.date_range(start=first_fut, periods=len(future_preds), freq=freq)
+                        except Exception:
+                            future_dates = pd.date_range(start=first_fut, periods=len(future_preds), freq="MS")
+                        for i, (val, dt) in enumerate(zip(future_preds, future_dates)):
+                            rows.append(f"  {dt.strftime(xlabel)}  →  **{val:.4f}**")
+                        time_range = f"{first_fut.strftime(xlabel)} ~ {future_dates[-1].strftime(xlabel)}"
+                    elif first_fut is not None:
+                        # 数值时间轴模式（分钟/秒等）
+                        val_step = float(first_fut - first_date) if first_date is not None and first_fut != first_date else 1.0
+                        for i, val in enumerate(future_preds):
+                            future_val = float(first_fut) + val_step * (i + 1)
+                            rows.append(f"  {future_val:.2f}  →  **{val:.4f}**")
+                        time_range = f"{float(first_fut):.2f} ~ {float(first_fut) + val_step * len(future_preds):.2f} ({xlabel or '时间'})"
+                    else:
+                        for i, val in enumerate(future_preds):
+                            rows.append(f"  第 {i+1:3d} 步  →  **{val:.4f}**")
+                        time_range = f"第 {len(y)} 步 ~ 第 {len(y)+len(future_preds)-1} 步"
+                    forecast_text = f"**未来 {len(future_preds)} 步预测值（{target_col}）：{time_range}**\n\n" + "\n".join(rows[:30])
                     if len(future_preds) > 30:
                         forecast_text += f"\n  ...（共 {len(future_preds)} 步，已截取前30步）"
                     
@@ -903,7 +1259,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                     volatility = sum(1 for d in diffs if abs(d) > 0.05 * abs(first_val)) / max(1, len(diffs))
                     
                     summary_text = (
-                        f"**{target_col} 未来 {n_steps} 步趋势总结**\n\n"
+                        f"**{target_col} 未来 {n_steps} 步趋势总结**（{time_range}）\n\n"
                         f"**趋势方向**：{trend}\n\n"
                         f"{trend_desc}\n\n"
                         f"**预测区间**：{min(future_preds):.4f} ~ {max(future_preds):.4f}\n\n"
@@ -928,19 +1284,39 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                     
                     last_n = min(100, len(y))
                     hist = y[-last_n:]
-                    steps_hist = list(range(len(y) - last_n, len(y)))
-                    steps_fut = list(range(len(y), len(y) + len(future_preds)))
+                    # 构建真实时间轴
+                    d_steps = build_datetime_steps(data_loader.df, feature_col, last_n, len(future_preds))
+                    steps_hist, steps_fut, xtick_hist, xtick_fut, xlabel, first_date, first_fut = d_steps
                     std_val = np.std(future_preds) * 0.5
                     
                     prog(0.65, desc="生成图表...")
                     forecast_plot = select_plot_function(
                         chart_requirement, hist, future_preds,
-                        target_col, steps_hist, steps_fut, std_val
+                        target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, std_val, xlabel
                     )
+                    # 立即保存为PNG并转换为路径字符串，避免返回matplotlib Figure导致Gradio postprocess错误
+                    forecast_plot.savefig(output_dir / "forecast.png", dpi=150, bbox_inches='tight')
                     plt.close(forecast_plot)
+                    forecast_plot = str(output_dir / "forecast.png")
                     
-                    rows = [f"  第 {i+1:3d} 步  →  **{val:.4f}**" for i, val in enumerate(future_preds[:30])]
-                    forecast_text = f"**未来 {len(future_preds)} 步预测值（{target_col}）：**\n\n" + "\n".join(rows)
+                    # 预测值表格（显示真实日期或数值时间轴）
+                    is_datetime_mode = xlabel and '%' in str(xlabel)
+                    if is_datetime_mode and first_fut is not None:
+                        freq = "MS"
+                        try:
+                            future_dates = pd.date_range(start=first_fut, periods=len(future_preds), freq=freq)
+                        except Exception:
+                            future_dates = pd.date_range(start=first_fut, periods=len(future_preds), freq="MS")
+                        rows = [f"  {dt.strftime(xlabel)}  →  **{val:.4f}**" for dt, val in zip(future_dates[:30], future_preds[:30])]
+                        time_range = f"{first_fut.strftime(xlabel)} ~ {future_dates[-1].strftime(xlabel)}"
+                    elif first_fut is not None:
+                        val_step = float(first_fut - first_date) if first_date is not None and first_fut != first_date else 1.0
+                        rows = [f"  {float(first_fut) + val_step * (i+1):.2f}  →  **{val:.4f}**" for i, val in enumerate(future_preds[:30])]
+                        time_range = f"{float(first_fut):.2f} ~ {float(first_fut) + val_step * len(future_preds):.2f} ({xlabel or '时间'})"
+                    else:
+                        rows = [f"  第 {i+1:3d} 步  →  **{val:.4f}**" for i, val in enumerate(future_preds[:30])]
+                        time_range = f"第 {len(y)} 步 ~ 第 {len(y)+len(future_preds)-1} 步"
+                    forecast_text = f"**未来 {len(future_preds)} 步预测值（{target_col}）：{time_range}**\n\n" + "\n".join(rows)
                     if len(future_preds) > 30:
                         forecast_text += f"\n  ...（共 {len(future_preds)} 步，已截取前30步）"
                     
@@ -960,7 +1336,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                         trend_desc = f"基本维持在 {last_val:.4f} 附近"
                     
                     summary_text = (
-                        f"**{target_col} 未来 {n_steps} 步趋势总结**\n\n"
+                        f"**{target_col} 未来 {n_steps} 步趋势总结**（{time_range}）\n\n"
                         f"**趋势方向**：{trend}\n\n"
                         f"{trend_desc}\n\n"
                         f"**预测区间**：{min(future_preds):.4f} ~ {max(future_preds):.4f}\n\n"
@@ -981,27 +1357,39 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                 import zipfile
                 import json
                 
-                output_dir = Path("outputs") / f"{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
-                output_dir.mkdir(parents=True, exist_ok=True)
-                
-                # 重新生成 fig 以便保存
-                std_val = np.std(future_preds) * 0.5
-                fig = select_plot_function(
-                    chart_requirement, hist, future_preds,
-                    target_col, steps_hist, steps_fut, std_val
-                )
-                fig.savefig(output_dir / "forecast.png", dpi=150, bbox_inches='tight')
-                plt.close(fig)
+                # output_dir 已在函数开头统一创建，直接使用已保存的 PNG
+                # forecast_plot 已经是 str(output_dir / "forecast.png")
+                # 确保 PNG 文件存在（万一代码路径跳过了保存，补救性保存）
+                forecast_png_path = str(output_dir / "forecast.png")
+                if not Path(forecast_png_path).is_file():
+                    fig = select_plot_function(
+                        chart_requirement, hist, future_preds,
+                        target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, std_val, xlabel
+                    )
+                    fig.savefig(forecast_png_path, dpi=150, bbox_inches='tight')
+                    plt.close(fig)
+                    forecast_plot = forecast_png_path
+                # 注意：不再重复创建 output_dir，zip 使用已存在的那个
                 
                 # 保存预测数据 CSV
                 all_steps = steps_hist + steps_fut
                 all_vals = list(hist) + list(future_preds)
                 types_ = ['历史'] * len(steps_hist) + ['预测'] * len(steps_fut)
-                csv_df = pd.DataFrame({
-                    'step': all_steps,
-                    'type': types_,
-                    target_col: all_vals
-                })
+                # 包含真实日期的 CSV（如果可用）
+                if xtick_hist and xtick_fut:
+                    all_labels = xtick_hist + xtick_fut
+                    csv_df = pd.DataFrame({
+                        'date': all_labels,
+                        'step': all_steps,
+                        'type': types_,
+                        target_col: all_vals
+                    })
+                else:
+                    csv_df = pd.DataFrame({
+                        'step': all_steps,
+                        'type': types_,
+                        target_col: all_vals
+                    })
                 csv_df.to_csv(output_dir / "forecast_data.csv", index=False, encoding='utf-8-sig')
                 
                 # 保存指标 JSON
@@ -1057,29 +1445,46 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
     def on_predict(file):
         global predictor, lstm_pred
         
-        if predictor is None and (lstm_pred is None or not lstm_pred.is_fitted):
+        # 修复：更严格的 guard，确保 predictor 和 lstm_pred 都是 None 或未训练时提前返回
+        predictor_ready = predictor is not None and predictor.is_fitted
+        lstm_ready = lstm_pred is not None and lstm_pred.is_fitted
+        if not predictor_ready and not lstm_ready:
             return "❌ 请先训练模型", None
         
         if file is None:
             return "❌ 请上传预测数据文件", None
         
         try:
-            df = pd.read_csv(file.name)
+            file_path = extract_file_path(file)
+            if not file_path:
+                return "❌ 无法提取文件路径", None
+            df = pd.read_csv(file_path)
         except Exception as e:
             return f"❌ 读取文件失败: {e}", None
         
-        if predictor and predictor.is_fitted:
+        result_df = None
+        if predictor_ready:
             cols = [c for c in predictor.feature_names if c in df.columns]
             if not cols:
                 return "❌ 新数据中没有匹配的特征列", None
             pred = predictor.predict(df[cols])
+            if pred is None:
+                print("预测返回 None")
+                return "❌ 预测失败：模型返回空结果", None
             result_df = df.copy()
             result_df['预测值'] = pred
-        elif lstm_pred and lstm_pred.is_fitted:
+        elif lstm_ready:
             X = df.values.astype(np.float32)
             pred = lstm_pred.predict(X)
+            if pred is None:
+                print("LSTM 预测返回 None")
+                return "❌ 预测失败：模型返回空结果", None
             result_df = df.copy()
             result_df['预测值'] = pred
+        
+        # 双重保险：result_df 仍未定义则返回错误
+        if result_df is None:
+            return "❌ 未找到可用的训练模型", None
         
         table = result_df.tail(30).to_html(max_cols=15, classes='table table-striped')
         return "✅ 预测完成", table
@@ -1088,11 +1493,12 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
     file_input.change(
         on_file_upload,
         inputs=[file_input],
-        outputs=[data_preview, data_info, data_structure_info, data_decouple_info, feature_col, target_col, model_recommend, model_select]
+        outputs=[data_preview, data_info, data_structure_info, data_decouple_info, feature_col, target_col, model_recommend, model_select],
+        queue=False  # 禁用队列避免 Gradio 6.x FileData meta 序列化错误
     )
     train_btn.click(
         on_train,
-        inputs=[feature_col, target_col, predict_mode, model_select, requirement, n_future, chart_requirement],
+        inputs=[feature_col, target_col, predict_mode, model_select, requirement, n_future_val, n_future_unit, chart_requirement],
         outputs=[result_out, config_out, importance_out, forecast_plot, forecast_out, summary_out, download_file]
     )
     download_btn.click(
@@ -1100,7 +1506,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
         inputs=[download_file],
         outputs=[download_file]
     )
-    predict_btn.click(on_predict, inputs=[predict_file], outputs=[predict_status, predict_out])
+    predict_btn.click(on_predict, inputs=[predict_file], outputs=[predict_status, predict_out], queue=False)
 
 
 if __name__ == "__main__":
@@ -1109,12 +1515,12 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
     print("=" * 60)
     print("  DeepPredict Web 版 v1.04 已启动！")
-    print(f"  访问地址: http://0.0.0.0:{port}")
+    print(f"  访问地址: http://127.0.0.1:{port}")
     print("  同一局域网内的手机/电脑都可以访问")
     print("  按 Ctrl+C 停止")
     print("=" * 60)
     demo.launch(
-        server_name="0.0.0.0",
+        server_name="127.0.0.1",
         server_port=port,
         show_error=True
     )

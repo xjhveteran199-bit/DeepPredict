@@ -902,7 +902,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
     # ========== 事件处理 ==========
 
     def on_file_upload(file):
-        global data_loader, predictor, lstm_pred, data_decoupler
+        global predictor, lstm_pred, data_decoupler
         predictor = None
         lstm_pred = None
         data_decoupler = None

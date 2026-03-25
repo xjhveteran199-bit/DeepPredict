@@ -72,6 +72,7 @@ from src.data.data_decoupler import DataDecoupler
 
 def plot_bland_altman(y_true, y_pred, title="Bland-Altman"):
     """Bland-Altman 一致性分析图"""
+    from matplotlib.figure import Figure
     y_true_arr = np.asarray(y_true).flatten()
     y_pred_arr = np.asarray(y_pred).flatten()
     mean_arr = (y_pred_arr + y_true_arr) / 2
@@ -1487,6 +1488,7 @@ with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
                 # 打包 zip
                     # Bland-Altman + Training History chart generation
                     ba_png_path = None
+                    from matplotlib.figure import Figure
                     ba_csv_path = None
                     hist_png_path = None
                     hist_csv_path = None

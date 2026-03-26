@@ -56,6 +56,7 @@ class MainWindow(QMainWindow):
         
         # 状态
         self.current_data: Optional[dict] = None
+        self.current_recommendation: Optional[dict] = None
         
         self._init_ui()
         self._init_styles()
@@ -216,7 +217,38 @@ class MainWindow(QMainWindow):
         
         config_layout.addWidget(self.config_text)
         layout.addWidget(config_group)
-        
+
+        # 1.5 AI 模型推荐（上传CSV后自动显示）
+        recommend_group = QGroupBox("🤖 AI 模型推荐")
+        recommend_layout = QVBoxLayout(recommend_group)
+
+        self.recommend_text = QTextEdit()
+        self.recommend_text.setReadOnly(True)
+        self.recommend_text.setMaximumHeight(160)
+        self.recommend_text.setPlaceholderText("上传CSV数据后，这里自动显示AI推荐的模型")
+        self.recommend_text.setStyleSheet(
+            "QTextEdit { background: #f0f8ff; color: #333; "
+            "border: 1px solid #b0d4f1; border-radius: 4px; padding: 5px; font-size: 12px; }"
+        )
+
+        recommend_layout.addWidget(self.recommend_text)
+
+        # 一键采纳推荐按钮
+        btn_layout = QHBoxLayout()
+        self.adopt_btn = QPushButton("采纳推荐并训练")
+        self.adopt_btn.setEnabled(False)
+        self.adopt_btn.setStyleSheet(
+            "QPushButton { background: #28a745; color: white; border: none; "
+            "border-radius: 4px; padding: 6px 16px; font-weight: bold; }"
+            "QPushButton:disabled { background: #ccc; }"
+        )
+        self.adopt_btn.clicked.connect(self._on_adopt_recommendation)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.adopt_btn)
+        recommend_layout.addLayout(btn_layout)
+
+        layout.addWidget(recommend_group)
+
         # 2. 训练进度
         progress_group = QGroupBox("📈 训练进度")
         progress_layout = QVBoxLayout(progress_group)
@@ -369,6 +401,7 @@ class MainWindow(QMainWindow):
         
         self.current_data = summary
         self._update_train_button_state()
+        self._update_model_recommendation()
     
     def _update_target_combo(self):
         """更新目标列下拉框"""
@@ -403,13 +436,105 @@ class MainWindow(QMainWindow):
     def _update_task_config(self):
         """更新任务配置显示"""
         requirement = self.requirement_edit.toPlainText().strip()
-        
+
         if not requirement or not self.current_data:
             self.config_text.setPlainText("请先选择目标列并描述预测需求")
             return
-        
+
         task_config = self.task_router.parse_requirement(requirement, self.current_data)
         self.config_text.setPlainText(self.task_router.explain_task())
+
+    def _update_model_recommendation(self):
+        """上传CSV后自动分析并推荐模型"""
+        if not self.current_data:
+            return
+
+        try:
+            df = self.data_loader.df
+            rec = self.task_router.recommend_model(self.current_data, df)
+            self.current_recommendation = rec
+
+            # 显示推荐
+            self.recommend_text.setPlainText(self.task_router.explain_recommendation(rec))
+            self.adopt_btn.setEnabled(True)
+            self._log(f"[AI推荐] 模型: {rec['model']} | 置信度: {rec['confidence']:.0%}")
+        except Exception as e:
+            self._log(f"[AI推荐] 分析失败: {e}")
+
+    def _on_adopt_recommendation(self):
+        """采纳AI推荐：一键训练"""
+        if not self.current_recommendation:
+            return
+
+        target_col = self.target_combo.currentText()
+        if not target_col:
+            QMessageBox.warning(self, "提示", "请先选择目标列")
+            return
+
+        rec = self.current_recommendation
+
+        # 自动填入需求描述
+        suggested_requirement = f"使用{rec['model']}预测"
+        self.requirement_edit.setPlainText(suggested_requirement)
+
+        # 获取特征和目标
+        feature_df = self.data_loader.get_feature_matrix(exclude_cols=[target_col])
+        target_series = self.data_loader.df[target_col]
+
+        if feature_df.empty:
+            QMessageBox.warning(self, "错误", "特征为空")
+            return
+
+        # 使用推荐参数
+        model_name = rec['model']
+        model_params = rec['params']
+
+        # 决定 task_type
+        if target_col in self.data_loader._numeric_cols:
+            task_type = 'regression'
+        else:
+            task_type = 'classification'
+
+        # 训练集/测试集划分
+        test_size = 0.2
+
+        # 禁用按钮
+        self.train_btn.setEnabled(False)
+        self.adopt_btn.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(10)
+        self._log(f"[AI推荐] 开始训练 {model_name}，参数: {model_params}")
+
+        # 训练
+        success, msg = self.predictor.train(
+            X=feature_df,
+            y=target_series,
+            task_type=task_type,
+            model_name=model_name,
+            model_params=model_params,
+            test_size=test_size
+        )
+
+        self.progress_bar.setValue(100)
+
+        if success:
+            self._log("AI推荐训练完成: " + msg.replace("\n", " "))
+            importance = self.predictor.get_feature_importance()
+            if importance:
+                sorted_imp = sorted(importance.items(), key=lambda x: x[1], reverse=True)[:10]
+                imp_text = "\n".join([f"{name}: {val:.4f}" for name, val in sorted_imp])
+                self.importance_text.setPlainText(imp_text)
+
+            self.predict_btn.setEnabled(True)
+            self.save_btn.setEnabled(True)
+            self.status_label.setText(f"AI推荐训练完成！{model_name} R²={self.predictor.metrics.get('R2', 'N/A'):.4f}")
+        else:
+            self._log(f"AI推荐训练失败: {msg}")
+            QMessageBox.critical(self, "训练失败", msg)
+
+        self.train_btn.setEnabled(True)
+        self.adopt_btn.setEnabled(True)
+        self.progress_bar.setVisible(False)
     
     def _on_train(self):
         """开始训练"""

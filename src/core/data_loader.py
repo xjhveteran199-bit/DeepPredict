@@ -118,19 +118,11 @@ class DataLoader:
 
     def _is_date_column(self, col: str, series: pd.Series) -> bool:
         """判断是否为日期列"""
-        # 1. 列名关键词
-        date_keywords = ['date', 'time', '时间', '日期', 'datetime', 'timestamp',
-                        'year', 'month', 'day', 'hour', 'minute', 'second',
-                        'created', 'updated', 'dt']
-        col_lower = col.lower()
-        if any(kw in col_lower for kw in date_keywords):
-            return True
-
-        # 2. dtype 是 datetime
+        # 1. dtype 是 datetime
         if pd.api.types.is_datetime64_any_dtype(series):
             return True
 
-        # 3. 字符串列尝试 parse
+        # 2. 字符串列尝试 parse（仅对object/str类型做列名探测）
         if series.dtype == 'object':
             sample = series.dropna().head(10)
             if len(sample) == 0:

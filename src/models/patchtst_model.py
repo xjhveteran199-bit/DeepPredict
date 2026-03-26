@@ -616,6 +616,9 @@ class PatchTSTPredictor:
 
         while remaining > 0:
             this_pred = min(remaining, max_pred)
+            # Ensure x_cur is 1D before predict to avoid shape mismatch across iterations
+            if x_cur.ndim > 1:
+                x_cur = x_cur.flatten()
             preds = self.predict(x_cur, pred_len=this_pred)
             # 取最后 this_pred 个预测
             preds = preds[:this_pred]

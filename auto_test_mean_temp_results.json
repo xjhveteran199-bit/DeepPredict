@@ -1,0 +1,29 @@
+{
+  "dataset": "monthly_mean_temp_nottingham",
+  "source": "https://raw.githubusercontent.com/jbrownlee/Datasets/master/monthly-mean-temp.csv",
+  "n_samples": 240,
+  "n_train": 168,
+  "n_test": 72,
+  "seq_len": 33,
+  "pred_chunk": 16,
+  "results": {
+    "cnn1d": {
+      "status": "ok",
+      "r2": 0.8161,
+      "rmse": 3.6885,
+      "mae": 3.0853
+    },
+    "patchtst": {
+      "status": "ok",
+      "r2": 0.9209,
+      "rmse": 2.4182,
+      "mae": 1.9387
+    },
+    "lstm": {
+      "status": "ok",
+      "r2": 0.8974,
+      "rmse": 2.7551,
+      "mae": 2.2885
+    }
+  }
+}

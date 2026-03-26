@@ -1,0 +1,14 @@
+模型名称: CNN1D-V4
+目标列: K-with epifluidics
+序列长度: seq_len=96
+预测步数: 48
+训练轮数: 7 epochs
+最终R2: 0.7897
+RMSE: 0.2495
+MAE: 0.2117
+未来预测步数: 48
+预测值范围: [9.9084, 10.0061]
+损失曲线: cnn1d_loss_curve.png
+预测对比图: C:\Users\XJH\DeepPredict\paper_figures\cnn1d_k_epifluidics_prediction.png
+未来预测图: C:\Users\XJH\DeepPredict\paper_figures\cnn1d_k_epifluidics_future.png
+模型路径: C:\Users\XJH\DeepPredict\outputs\cnn1d_k_epifluidics_model.pt

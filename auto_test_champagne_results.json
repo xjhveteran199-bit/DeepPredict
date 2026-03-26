@@ -1,0 +1,27 @@
+{
+  "dataset": "champagne_sales",
+  "source": "https://raw.githubusercontent.com/jbrownlee/Datasets/master/monthly_champagne_sales.csv",
+  "n_samples": 105,
+  "n_train": 73,
+  "n_test": 32,
+  "results": {
+    "cnn1d": {
+      "status": "ok",
+      "r2": 0.1136,
+      "rmse": 2558.0061,
+      "mae": 1884.0007
+    },
+    "patchtst": {
+      "status": "ok",
+      "r2": -0.2213,
+      "rmse": 3002.4922,
+      "mae": 1811.0024
+    },
+    "lstm": {
+      "status": "ok",
+      "r2": 0.3147,
+      "rmse": 2249.1099,
+      "mae": 1635.1082
+    }
+  }
+}

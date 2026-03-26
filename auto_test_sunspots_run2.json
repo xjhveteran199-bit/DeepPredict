@@ -1,0 +1,30 @@
+{
+  "dataset": "monthly_sunspots",
+  "source": "https://raw.githubusercontent.com/jbrownlee/Datasets/master/monthly-sunspots.csv",
+  "n_samples": 2820,
+  "n_train": 1973,
+  "n_test": 847,
+  "seq_len": 96,
+  "pred_chunk": 48,
+  "results": {
+    "cnn1d": {
+      "status": "success",
+      "r2": -1.4025,
+      "rmse": 79.7019,
+      "mae": 61.1912
+    },
+    "patchtst": {
+      "status": "success",
+      "r2": 0.5621,
+      "rmse": 34.0255,
+      "mae": 25.0724
+    },
+    "lstm": {
+      "status": "success",
+      "r2": -0.0494,
+      "rmse": 52.6765,
+      "mae": 38.0577
+    }
+  },
+  "fixes": []
+}

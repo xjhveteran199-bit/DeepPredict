@@ -159,6 +159,17 @@ class Predictor:
     def _create_model(self, model_name: str, params: Dict, task_type: str):
         params = params or {}
         
+        # 过滤掉时序模型参数，避免传给 sklearn 模型
+        sklearn_forbidden_keys = {
+            'seq_len', 'pred_len', 'hidden_channels', 'hidden_size',
+            'kernel_size', 'num_layers', 'patch_size', 'd_model',
+            'n_heads', 'n_layers', 'd_ff', 'dropout', 'n_date_features',
+            'epochs', 'batch_size', 'learning_rate', 'weight_decay',
+            'grad_clip', 'early_stopping', 'seq_len', 'pred_len'
+        }
+        filtered_params = {k: v for k, v in params.items() 
+                         if k not in sklearn_forbidden_keys}
+        
         model_map = {
             ('RandomForest', 'regression'): RandomForestRegressor,
             ('RandomForest', 'classification'): RandomForestClassifier,
@@ -171,10 +182,10 @@ class Predictor:
         key = (model_name, task_type)
         if key not in model_map:
             if task_type == 'classification':
-                return RandomForestClassifier(**params) if params else RandomForestClassifier()
-            return RandomForestRegressor(**params) if params else RandomForestRegressor()
+                return RandomForestClassifier(**filtered_params) if filtered_params else RandomForestClassifier()
+            return RandomForestRegressor(**filtered_params) if filtered_params else RandomForestRegressor()
         
-        return model_map[key](**params)
+        return model_map[key](**filtered_params)
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         if not self.is_fitted:

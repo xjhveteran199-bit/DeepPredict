@@ -49,6 +49,8 @@ val_losses = [2.6 * np.exp(-e / 18) + 0.12 + np.random.randn() * 0.08 for e in r
 # 可选: 'ieee' | 'nature' | 'science' | 'bw'（黑白打印友好）
 STYLE = 'ieee'
 EXPORT_DIR = './paper_figures'
+import os
+os.makedirs(EXPORT_DIR, exist_ok=True)
 
 plotter = PublicationPlotter(style=STYLE)
 print(f"使用样式: {STYLE}")
@@ -73,7 +75,7 @@ fig2 = plotter.plot_residuals(
 print("✅ fig2_residuals.png")
 
 # ── 3. 散点图 ───────────────────────────────────────────
-fig3 = plotter.scatter(
+fig3 = plotter.plot_scatter(
     y_true, y_pred,
     title="CNN1D-V4 Actual vs Predicted",
     save_path=f"{EXPORT_DIR}/fig3_scatter.png", dpi=300

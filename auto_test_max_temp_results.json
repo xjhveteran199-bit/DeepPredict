@@ -1,0 +1,27 @@
+{
+  "dataset": "daily_max_temperatures",
+  "source": "https://raw.githubusercontent.com/jbrownlee/Datasets/master/daily-max-temperatures.csv",
+  "n_samples": 3650,
+  "n_train": 2555,
+  "n_test": 1095,
+  "results": {
+    "cnn1d": {
+      "status": "ok",
+      "r2": 0.2767,
+      "rmse": 5.146,
+      "mae": 3.6309
+    },
+    "patchtst": {
+      "status": "ok",
+      "r2": 0.0855,
+      "rmse": 5.7862,
+      "mae": 4.2746
+    },
+    "lstm": {
+      "status": "ok",
+      "r2": 0.1062,
+      "rmse": 5.7202,
+      "mae": 4.7941
+    }
+  }
+}

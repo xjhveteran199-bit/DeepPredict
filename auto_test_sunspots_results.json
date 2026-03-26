@@ -1,0 +1,27 @@
+{
+  "dataset": "monthly_sunspots",
+  "source": "https://raw.githubusercontent.com/jbrownlee/Datasets/master/monthly-sunspots.csv",
+  "n_samples": 2820,
+  "n_train": 1973,
+  "n_test": 847,
+  "seq_len": 96,
+  "pred_chunk": 48,
+  "results": {
+    "cnn1d": {
+      "status": "success",
+      "r2": -1.4023,
+      "rmse": 79.699,
+      "mae": 61.1878
+    },
+    "patchtst": {
+      "status": "success",
+      "r2": 0.4115,
+      "rmse": 39.4453,
+      "mae": 27.5309
+    },
+    "lstm": {
+      "status": "failed",
+      "error": "TypeError: LSTMPredictor.train() got an unexpected keyword argument 'pred_len'"
+    }
+  }
+}

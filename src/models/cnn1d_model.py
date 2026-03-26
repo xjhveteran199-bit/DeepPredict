@@ -44,11 +44,19 @@ class CNN1DModelV4(nn.Module):
     ):
         super().__init__()
 
+        if seq_len <= 0:
+            raise ValueError(
+                f"seq_len must be a positive integer, got {seq_len}. "
+                "This would cause division-by-zero in patch_size computation."
+            )
+
         self.seq_len = seq_len
         self.pred_len = pred_len
 
         valid_patch_sizes = [p for p in [1, 2, 4, 8, 16, 24, 32] if seq_len % p == 0]
-        self.patch_size = valid_patch_sizes[-1] if valid_patch_sizes else 1
+        if not valid_patch_sizes:
+            valid_patch_sizes = [1]
+        self.patch_size = valid_patch_sizes[-1]
         self.num_patches = seq_len // self.patch_size
 
         self.patch_embed = nn.Conv1d(
@@ -121,6 +129,12 @@ class MultiChannelCNN1D(nn.Module):
     ):
         super().__init__()
 
+        if seq_len <= 0:
+            raise ValueError(
+                f"seq_len must be a positive integer, got {seq_len}. "
+                "This would cause division-by-zero in patch_size computation."
+            )
+
         self.seq_len = seq_len
         self.pred_len = pred_len
         self.input_size = input_size
@@ -133,7 +147,9 @@ class MultiChannelCNN1D(nn.Module):
         # === Patch embedding ===
         # 输入: (batch, input_size, seq_len)
         valid_patch_sizes = [p for p in [1, 2, 4, 8, 16, 24, 32] if seq_len % p == 0]
-        patch_size = valid_patch_sizes[-1] if valid_patch_sizes else 1
+        if not valid_patch_sizes:
+            valid_patch_sizes = [1]
+        patch_size = valid_patch_sizes[-1]
         num_patches = seq_len // patch_size
         self.patch_size = patch_size
         self.num_patches = num_patches
@@ -659,7 +675,7 @@ class CNN1DPredictorV4:
         y_pred_lower: Optional[np.ndarray] = None,
         y_pred_upper: Optional[np.ndarray] = None,
         export_dir: str = "./paper_figures",
-        style: str = JournalStyle.IEEE,
+        style: str = "ieee",
         dpi: int = 300,
         model_name: str = "CNN1D",
     ) -> Dict[str, str]:

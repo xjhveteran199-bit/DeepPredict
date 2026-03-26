@@ -1,0 +1,29 @@
+{
+  "dataset": "indpro",
+  "source": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=INDPRO",
+  "n_samples": 1286,
+  "n_train": 900,
+  "n_test": 386,
+  "seq_len": 48,
+  "pred_chunk": 24,
+  "results": {
+    "cnn1d": {
+      "status": "ok",
+      "r2": -0.8654,
+      "rmse": 12.328,
+      "mae": 11.1765
+    },
+    "patchtst": {
+      "status": "ok",
+      "r2": 0.6914,
+      "rmse": 5.0143,
+      "mae": 3.4046
+    },
+    "lstm": {
+      "status": "ok",
+      "r2": -18.7324,
+      "rmse": 40.0957,
+      "mae": 38.9475
+    }
+  }
+}

@@ -749,7 +749,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
     # 首页介绍
     with gr.Tab("🏠 首页介绍"):
         gr.Markdown("""
-        # 🧠 DeepPredict - 零门槛深度学习预测工具
+        # 🧠 ChronoML - 零门槛时序预测工具
 
         ### 告别复杂代码,3步完成AI预测!
 
@@ -1209,7 +1209,9 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         mpl.rcParams['text.usetex'] = False  # 禁用 LaTeX,纯 matplotlib 渲染
-        output_dir = Path("outputs") / f"{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
+        # 使用绝对路径确保 Gradio 6.x 能正确服务文件
+        base_dir = Path(__file__).parent.resolve()
+        output_dir = base_dir / "outputs" / f"{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
         output_dir.mkdir(parents=True, exist_ok=True)
         # ===== 生成未来预测 ======
         forecast_plot = None
@@ -1534,7 +1536,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                                     hist_csv_path = str(output_dir / "training_history.csv")
                                 except Exception as e:
                                     print("History chart error: {}".format(e))
-                zip_name = f"DeepPredict_{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}.zip"
+                zip_name = f"ChronoML_{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}.zip"
                 zip_path = str(output_dir / zip_name)
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                     zf.write(output_dir / "forecast.png", arcname="forecast.png")
@@ -1559,10 +1561,11 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
         """手动触发下载最新结果包"""
         import zipfile
         from pathlib import Path
-        outputs = Path("outputs")
+        base_dir = Path(__file__).parent.resolve()
+        outputs = base_dir / "outputs"
         if not outputs.exists():
             return ""
-        zips = sorted(outputs.rglob("DeepPredict_*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+        zips = sorted(outputs.rglob("ChronoML_*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
         if zips:
             return str(zips[0])
         return ""

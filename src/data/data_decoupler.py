@@ -326,8 +326,14 @@ class DataDecoupler:
                 vals = series.fillna('__UNKNOWN__').astype(str)
                 # 处理未知类别
                 known = set(le.classes_)
-                encoded = vals.apply(lambda v: le.transform([v])[0] if v in known
-                                    else -1).values.astype(float)
+                def safe_encode(v):
+                    try:
+                        if v in known:
+                            return le.transform([v])[0]
+                        return -1
+                    except Exception:
+                        return -1
+                encoded = vals.apply(safe_encode).values.astype(float)
                 columns.append(encoded)
                 self.feature_names.append(col)
 

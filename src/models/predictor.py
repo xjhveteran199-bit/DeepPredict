@@ -115,7 +115,12 @@ class Predictor:
             # ===== sklearn 模型 =====
             self._is_lstm = False
             self.scaler = StandardScaler()
-            X_scaled = self.scaler.fit_transform(X.fillna(X.median()))
+            # 只对有 NaN 的列填充，避免所有列为 NaN 时 median() 返回全 NaN Series
+            X_filled = X.copy()
+            nan_cols = X.columns[X.isna().any()]
+            if len(nan_cols) > 0:
+                X_filled[nan_cols] = X[nan_cols].fillna(X[nan_cols].median())
+            X_scaled = self.scaler.fit_transform(X_filled)
 
             if task_type == 'classification':
                 self.label_encoder = LabelEncoder()

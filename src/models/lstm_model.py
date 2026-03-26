@@ -258,13 +258,17 @@ class LSTMPredictor:
                 X_test_t = X_test_t.to(self.device)
                 predictions = self.model(X_test_t).cpu().numpy()
 
-                test_data_norm = np.zeros((len(y_test), data_normalized.shape[1]))
-                test_data_norm[:, -1] = predictions
-                pred_denorm = test_data_norm * self.scaler_std + self.scaler_mean
+                # 构建预测数据的归一化版本（只有最后一列是预测值，其他列为0）
+                # 然后对所有列正确反归一化，确保 scaler 的 mean/std 正确应用
+                test_pred_norm = np.zeros((len(predictions), data_normalized.shape[1]))
+                test_pred_norm[:, -1] = predictions.flatten()
+                pred_denorm = test_pred_norm * self.scaler_std + self.scaler_mean
                 predictions = pred_denorm[:, -1]
 
-                test_data_norm[:, -1] = y_test
-                y_test_denorm = test_data_norm * self.scaler_std + self.scaler_mean
+                # 构建测试数据的归一化版本（只有最后一列是真实值）
+                test_y_norm = np.zeros((len(y_test), data_normalized.shape[1]))
+                test_y_norm[:, -1] = y_test.flatten()
+                y_test_denorm = test_y_norm * self.scaler_std + self.scaler_mean
                 y_test_actual = y_test_denorm[:, -1]
 
                 mse = np.mean((predictions - y_test_actual) ** 2)

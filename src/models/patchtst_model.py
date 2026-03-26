@@ -237,12 +237,12 @@ class PatchTST(nn.Module):
         # 直接对输出做 denorm 会导致形状不匹配（广播错误）。因此只有 c_in == c_out 时才用 RevIN
         if self.use_revin and self.revin is not None and self.c_in == self.c_out:
             pred = self.revin(pred, 'denorm')
-        else:
-            # 当 c_in != c_out 时，手动用 y 的归一化参数反归一化
+        elif hasattr(self, '_target_mean') and hasattr(self, '_target_std'):
+            # 当 c_in != c_out 时，使用 Predictor 层传入的目标变量归一化参数进行反归一化
             # pred: (batch, pred_len, c_out) 其中 c_out=1
-            # 需要通过 self._target_mean/std 来反归一化，但这个信息在 Predictor 层，不在 Model 层
-            # 因此这里只做占位，让 Predictor 层再做处理
-            pass
+            mean = torch.tensor(self._target_mean, dtype=pred.dtype, device=pred.device)
+            std = torch.tensor(self._target_std, dtype=pred.dtype, device=pred.device)
+            pred = pred * std.unsqueeze(0).unsqueeze(-1) + mean.unsqueeze(0).unsqueeze(-1)
         
         return pred
 

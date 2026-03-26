@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import logging
-from typing import Tuple, Dict, Optional
+from typing import Tuple, Dict, Optional, Any
 
 # 期刊样式常量（避免循环导入）
 try:
@@ -336,6 +336,13 @@ class CNN1DPredictorV4:
             # 构建序列
             X_seqs, y_seqs = [], []
             date_seqs = [] if date_features is not None else None
+            # 确保列表已初始化，防止 None 访问
+            if X_seqs is None:
+                X_seqs = []
+            if y_seqs is None:
+                y_seqs = []
+            if date_features is not None and date_seqs is None:
+                date_seqs = []
 
             for i in range(seq_len, n_samples - pred_len + 1):
                 X_seqs.append(X[i - seq_len:i])      # (seq_len, n_features)
@@ -497,11 +504,15 @@ class CNN1DPredictorV4:
                 r2 = r2_score(y_test_actual.flatten(), test_pred.flatten())
 
                 # 计算校准偏移量：用测试集前几步预测的第一步的平均误差
+                # 注意：bias_offset 应为 (actual - pred) 在原始尺度上的差异，
+                # 用于 denormalize 后修正：pred = pred_norm * std + mean + bias_offset
                 n_calib = min(10, len(test_pred_norm))
                 bias_sum = 0.0
                 for i in range(n_calib):
-                    bias_sum += test_pred_norm[i][0] - y_test_np[i][0]
-                self._bias_offset = (bias_sum / n_calib) * self._target_std
+                    # 计算归一化空间的误差，然后转换到原始尺度
+                    # bias_offset > 0 表示 pred < actual，需要正向修正
+                    bias_sum += (y_test_np[i][0] - test_pred_norm[i][0]) * self._target_std
+                self._bias_offset = bias_sum / n_calib
                 logger.info(f"校准偏移量: {self._bias_offset:.4f}")
 
                 self.metrics = {
@@ -558,8 +569,8 @@ class CNN1DPredictorV4:
         with torch.no_grad():
             pred_norm = self.model(x_tensor).cpu().numpy()[0]
 
-        # 反归一化 + 校准偏移
-        pred = pred_norm * self._target_std + self._target_mean - self._bias_offset
+        # 反归一化 + 校准偏移（bias_offset > 0 表示 pred < actual，需正向修正）
+        pred = pred_norm * self._target_std + self._target_mean + self._bias_offset
 
         return pred[:pred_len]
 
@@ -585,8 +596,8 @@ class CNN1DPredictorV4:
             with torch.no_grad():
                 pred_norm = self.model(x_tensor).cpu().numpy()[0]
 
-            # 反归一化 + 校准偏移
-            pred = pred_norm * self._target_std + self._target_mean - self._bias_offset
+            # 反归一化 + 校准偏移（bias_offset > 0 表示 pred < actual，需正向修正）
+            pred = pred_norm * self._target_std + self._target_mean + self._bias_offset
 
             # 取第一步
             next_val = float(pred[0])
@@ -756,8 +767,8 @@ class CNN1DPredictorV4:
         self.metrics = data.get('metrics', {})
         self._bias_offset = self.metrics.get('bias_offset', 0.0)
 
-        hidden_channels = self.metrics.get('hidden_channels', 128)
-        num_layers = self.metrics.get('num_layers', 3)
+        hidden_channels = int(self.metrics.get('hidden_channels', 128))
+        num_layers = int(self.metrics.get('num_layers', 3))
 
         self.model = CNN1DModelV4(
             input_size=self.n_features,

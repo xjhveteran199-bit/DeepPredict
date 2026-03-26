@@ -31,7 +31,24 @@ class DataLoader:
         Returns: (success, message)
         """
         try:
-            self.file_path = Path(file_path)
+            # 安全检查：防止路径遍历攻击
+            file_path_str = str(file_path)
+            if '..' in file_path_str:
+                return False, "❌ 路径不允许包含 '..' 遍历符"
+
+            # 解析绝对路径并验证
+            try:
+                abs_path = Path(file_path).resolve()
+            except (OSError, ValueError):
+                return False, "❌ 路径解析失败"
+
+            # 定义允许的基础目录（当前工作目录或用户主目录）
+            allowed_bases = [Path.cwd(), Path.home(), Path('C:\\')]
+            is_allowed = any(str(abs_path).startswith(str(base)) for base in allowed_bases)
+            if not is_allowed:
+                return False, "❌ 路径不在允许的目录范围内"
+
+            self.file_path = abs_path
             self._label_encoders.clear()
             self._date_parser_results.clear()
 
@@ -210,7 +227,9 @@ class DataLoader:
         for col in cat_features:
             if col not in self._label_encoders:
                 le = LabelEncoder()
-                series = self.df[col].fillna(self.df[col].mode()[0] if not self.df[col].mode().empty else 'missing')
+                mode_series = self.df[col].mode()
+                fill_value = mode_series[0] if not mode_series.empty else 'missing'
+                series = self.df[col].fillna(fill_value)
                 encoded_cat[col] = le.fit_transform(series.astype(str))
                 self._label_encoders[col] = le
             else:
@@ -259,7 +278,9 @@ class DataLoader:
             features[f'{prefix}dayofyear'] = dt.dt.dayofyear.fillna(0).astype(int)
             features[f'{prefix}quarter'] = dt.dt.quarter.fillna(0).astype(int)
             features[f'{prefix}weekofyear'] = dt.dt.isocalendar().week.fillna(0).astype(int)
-            features[f'{prefix}hour'] = dt.dt.hour.fillna(0).astype(int) if valid.any() and dt.dt.hour.notna().any() else None
+            # 安全处理 hour：dt.dt.hour 可能对无效日期返回全 NaT，需检查
+            hour_series = dt.dt.hour
+            features[f'{prefix}hour'] = hour_series.fillna(0).astype(int) if valid.any() and not hour_series.isna().all() else 0
 
             # 周期性特征（sin/cos编码）
             if valid.any():

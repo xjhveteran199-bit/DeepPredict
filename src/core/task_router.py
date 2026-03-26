@@ -325,7 +325,8 @@ class TaskRouter:
                         if len(series) > lag * 2:
                             vals1 = series.values[:-lag]
                             vals2 = series.values[lag:]
-                            if len(vals1) > 1 and len(vals2) > 1 and np.std(vals1) > 0 and np.std(vals2) > 0:
+                            std1, std2 = np.nanstd(vals1), np.nanstd(vals2)
+                            if len(vals1) > 1 and len(vals2) > 1 and std1 > 0 and std2 > 0:
                                 ac = np.corrcoef(vals1, vals2)[0, 1]
                                 if not np.isnan(ac) and abs(ac) > 0.5:
                                     has_seasonality = True

@@ -1197,6 +1197,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
             try:
                 from src.models.patchtst_model import PatchTSTPredictor
                 lstm_pred = PatchTSTPredictor()
+                first_target = target_cols_list[0] if isinstance(target_cols_list, list) and target_cols_list else target_col
                 success, msg = lstm_pred.train(
                     X_for_model, y,
                     seq_len=params.get('seq_len', 96),
@@ -1208,7 +1209,8 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                     d_ff=params.get('d_ff', 256),
                     epochs=params.get('epochs', 30),
                     batch_size=params.get('batch_size', 32),
-                    learning_rate=params.get('learning_rate', 0.0005)
+                    learning_rate=params.get('learning_rate', 0.0005),
+                    target_col=first_target
                 )
                 predictor = None
             except Exception as e:
@@ -1571,7 +1573,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
 
                 metrics_dict = {
                     'model': model_name,
-                    'target': target_col,
+                    'target': target_col_display if isinstance(target_col, list) else target_col,
                     'n_future': n_steps,
                     'metrics': (predictor.metrics if predictor and predictor.is_fitted
                                 else (lstm_pred.metrics if hasattr(lstm_pred, 'metrics') else {})),
@@ -1633,7 +1635,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                                 hist_png_path = str(output_dir / "training_history.png")
                                 hist_fig.savefig(hist_png_path, dpi=150, bbox_inches="tight")
                                 plt.close(hist_fig)
-                                pd.DataFrame(th).to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
+                                pd.DataFrame.from_dict(th, orient='columns').to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
                                 hist_csv_path = str(output_dir / "training_history.csv")
                                 th_to_plot = th
                             except Exception as e:
@@ -1647,7 +1649,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                                 th_png = plot_training_history(th, target_col_display or target_col, output_dir)
                                 if th_png and Path(th_png).is_file():
                                     hist_png_path = th_png
-                                pd.DataFrame(th).to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
+                                pd.DataFrame.from_dict(th, orient='columns').to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
                                 hist_csv_path = str(output_dir / "training_history.csv")
                                 th_to_plot = th
                             except Exception as e:

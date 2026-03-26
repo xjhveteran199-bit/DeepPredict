@@ -1048,11 +1048,17 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
 
             # 左图：Loss
             ax_loss = axes[0]
-            epochs = history.get('epoch', list(range(1, len(history.get('train_loss', [])) + 1)))
-            ax_loss.plot(epochs, history.get('train_loss', []), color=NATURE_BLUE,
+            # 支持 PyTorch 格式(train_loss/val_loss)和 sklearn 格式(loss/accuracy)
+            train_losses = history.get('train_loss', history.get('loss', []))
+            val_losses = history.get('val_loss', [])
+            train_r2s = history.get('train_r2', history.get('accuracy', []))
+            val_r2s = history.get('val_r2', [])
+
+            epochs = history.get('epoch', list(range(1, len(train_losses) + 1)))
+            ax_loss.plot(epochs, train_losses, color=NATURE_BLUE,
                          linewidth=2, marker='o', markersize=3, label='Train Loss')
-            if history.get('val_loss'):
-                ax_loss.plot(epochs, history.get('val_loss', []), color=NATURE_RED,
+            if val_losses:
+                ax_loss.plot(epochs, val_losses, color=NATURE_RED,
                              linewidth=2, marker='s', markersize=3, label='Val Loss')
             ax_loss.set_xlabel('Epoch', fontsize=12)
             ax_loss.set_ylabel('Loss (MSE)', fontsize=12)
@@ -1063,11 +1069,11 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
 
             # 右图：R²
             ax_r2 = axes[1]
-            if history.get('train_r2'):
-                ax_r2.plot(epochs, history.get('train_r2', []), color=NATURE_GREEN,
+            if train_r2s:
+                ax_r2.plot(epochs, train_r2s, color=NATURE_GREEN,
                            linewidth=2, marker='o', markersize=3, label='Train R²')
-            if history.get('val_r2'):
-                ax_r2.plot(epochs, history.get('val_r2', []), color=NATURE_ORANGE,
+            if val_r2s:
+                ax_r2.plot(epochs, val_r2s, color=NATURE_ORANGE,
                            linewidth=2, marker='s', markersize=3, label='Val R²')
             ax_r2.set_xlabel('Epoch', fontsize=12)
             ax_r2.set_ylabel('R² Score', fontsize=12)
@@ -1077,9 +1083,10 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
             ax_r2.set_facecolor('#FAFAFA')
 
             # 如果有 MAE，在右图叠加
-            if history.get('val_mae') and history.get('val_r2'):
+            val_maes = history.get('val_mae', [])
+            if val_maes and val_r2s:
                 ax_mae = ax_r2.twinx()
-                ax_mae.plot(epochs, history.get('val_mae', []), color=NATURE_GRAY,
+                ax_mae.plot(epochs, val_maes, color=NATURE_GRAY,
                             linewidth=1.5, linestyle='--', marker='^', markersize=2, label='Val MAE')
                 ax_mae.set_ylabel('MAE', fontsize=10, color=NATURE_GRAY)
                 ax_mae.tick_params(axis='y', labelcolor=NATURE_GRAY)
@@ -1516,8 +1523,15 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                 forecast_text = f"趋势预测生成失败:{str(e)}"
                 summary_text = "*趋势预测生成失败,请查看上方训练结果*"
 
-        # ===== 生成结果包(zip) =====
-        zip_path = ""
+        # ===== 生成结果包(zip) ===== 三层结构
+        # 第一层:核心文件(必须保存,独立 try)
+        zip_path = None
+        ba_png_path = None
+        ba_csv_path = None
+        hist_png_path = None
+        hist_csv_path = None
+        th_to_plot = None
+
         if forecast_plot is not None and future_preds is not None and len(future_preds) > 0:
             try:
                 import matplotlib
@@ -1526,9 +1540,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                 import zipfile
                 import json
 
-                # output_dir 已在函数开头统一创建,直接使用已保存的 PNG
-                # forecast_plot 已经是 str(output_dir / "forecast.png")
-                # 确保 PNG 文件存在(万一代码路径跳过了保存,补救性保存)
+                # ── 核心文件 1: forecast.png ──
                 forecast_png_path = str(output_dir / "forecast.png")
                 if not Path(forecast_png_path).is_file():
                     fig = select_plot_function(
@@ -1538,13 +1550,11 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                     fig.savefig(forecast_png_path, dpi=300, bbox_inches='tight')
                     plt.close(fig)
                     forecast_plot = forecast_png_path
-                # 注意:不再重复创建 output_dir,zip 使用已存在的那个
 
-                # 保存预测数据 CSV
+                # ── 核心文件 2: forecast_data.csv ──
                 all_steps = steps_hist + steps_fut
                 all_vals = list(hist) + list(future_preds)
                 types_ = ['历史'] * len(steps_hist) + ['预测'] * len(steps_fut)
-                # 包含真实日期的 CSV(如果可用)
                 if xtick_hist and xtick_fut:
                     all_labels = xtick_hist + xtick_fut
                     csv_df = pd.DataFrame({
@@ -1561,7 +1571,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                     })
                 csv_df.to_csv(output_dir / "forecast_data.csv", index=False, encoding='utf-8-sig')
 
-                # 保存指标 JSON
+                # ── 核心文件 3: metrics.json ──
                 pred_min = float(min(future_preds))
                 pred_max = float(max(future_preds))
                 pred_mean = float(sum(future_preds) / len(future_preds))
@@ -1570,7 +1580,6 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                 change = last_val - first_val
                 pct = (change / abs(first_val) * 100) if first_val != 0 else 0
                 trend = "上升" if change > 0 else ("下降" if change < 0 else "平稳")
-
                 metrics_dict = {
                     'model': model_name,
                     'target': target_col_display if isinstance(target_col, list) else target_col,
@@ -1585,93 +1594,103 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                 with open(output_dir / "metrics.json", 'w', encoding='utf-8') as f:
                     json.dump(metrics_dict, f, ensure_ascii=False, indent=2)
 
-                # 打包 zip
-                    # Bland-Altman + Training History chart generation
-                    ba_png_path = None
-                    from matplotlib.figure import Figure
-                    ba_csv_path = None
-                    hist_png_path = None
-                    hist_csv_path = None
-                    th_to_plot = None  # 用于 UI 显示的训练历史
+            except Exception as e:
+                print("核心文件保存失败: {}".format(e))
+                # 核心文件失败,zip 仍然尝试打包(用已存在的文件)
+                forecast_png_path = str(output_dir / "forecast.png")
 
-                    # sklearn 模型的 BA 图和训练历史
-                    if predictor and predictor.is_fitted and predictor.task_type == "regression":
+            # ── 第二层:非核心文件(独立 try,失败不影响 ZIP) ──
+            try:
+                from matplotlib.figure import Figure
+
+                # sklearn BA 图
+                if predictor and predictor.is_fitted and predictor.task_type == "regression":
+                    try:
+                        split_idx = min(int(len(X_df) * 0.8), len(X_df) - 1)
+                        X_test_ba = X_df.iloc[split_idx:].select_dtypes(include=[np.number])
+                        y_test_ba = np.asarray(y_series.iloc[split_idx:]).flatten()
+                        if len(y_test_ba) > 0:
+                            X_scaled_ba = predictor.scaler.transform(X_test_ba.fillna(X_test_ba.median()))
+                            y_pred_ba = predictor.model.predict(X_scaled_ba)
+                            ba_fig = plot_bland_altman(y_test_ba, y_pred_ba, title=model_name)
+                            ba_png_path = str(output_dir / "bland_altman.png")
+                            ba_fig.savefig(ba_png_path, dpi=150, bbox_inches="tight")
+                            plt.close(ba_fig)
+                            ba_df = pd.DataFrame({"mean": list((y_pred_ba + y_test_ba) / 2), "diff": list(y_pred_ba - y_test_ba)})
+                            ba_csv_path = str(output_dir / "bland_altman_data.csv")
+                            ba_df.to_csv(ba_csv_path, index=False, encoding="utf-8-sig")
+                    except Exception as e:
+                        print("BA chart error: {}".format(e))
+
+                # sklearn 训练历史
+                if predictor and predictor.is_fitted and predictor.train_history:
+                    th = predictor.train_history
+                    n = len(th.get("loss", th.get("accuracy", [])))
+                    if n > 0:
                         try:
-                            split_idx = min(int(len(X_df) * 0.8), len(X_df) - 1)
-                            X_test_ba = X_df.iloc[split_idx:].select_dtypes(include=[np.number])
-                            y_test_ba = np.asarray(y_series.iloc[split_idx:]).flatten()
-                            if len(y_test_ba) > 0:
-                                X_scaled_ba = predictor.scaler.transform(X_test_ba.fillna(X_test_ba.median()))
-                                y_pred_ba = predictor.model.predict(X_scaled_ba)
-                                ba_fig = plot_bland_altman(y_test_ba, y_pred_ba, title=model_name)
-                                ba_png_path = str(output_dir / "bland_altman.png")
-                                ba_fig.savefig(ba_png_path, dpi=150, bbox_inches="tight")
-                                plt.close(ba_fig)
-                                ba_df = pd.DataFrame({"mean": list((y_pred_ba + y_test_ba) / 2), "diff": list(y_pred_ba - y_test_ba)})
-                                ba_csv_path = str(output_dir / "bland_altman_data.csv")
-                                ba_df.to_csv(ba_csv_path, index=False, encoding="utf-8-sig")
+                            hist_fig = Figure(figsize=(7, 4), dpi=150)
+                            ax_h = hist_fig.add_subplot(111)
+                            if "loss" in th:
+                                ax_h.plot(th["epoch"], th["loss"], color="#E64B35", lw=2, marker="o", markersize=4)
+                                ax_h.set_ylabel("Loss (RMSE)", fontsize=10)
+                                ax_h.set_title("Training Loss per Epoch (" + model_name + ")", fontsize=11)
+                            else:
+                                ax_h.plot(th["epoch"], th["accuracy"], color="#4DBBD5", lw=2, marker="o", markersize=4)
+                                ax_h.set_ylabel("Accuracy", fontsize=10)
+                                ax_h.set_title("Training Accuracy per Epoch (" + model_name + ")", fontsize=11)
+                            ax_h.set_xlabel("Epoch", fontsize=10)
+                            ax_h.grid(True, alpha=0.3)
+                            hist_fig.tight_layout()
+                            hist_png_path = str(output_dir / "training_history.png")
+                            hist_fig.savefig(hist_png_path, dpi=150, bbox_inches="tight")
+                            plt.close(hist_fig)
+                            pd.DataFrame.from_dict(th, orient='columns').to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
+                            hist_csv_path = str(output_dir / "training_history.csv")
+                            th_to_plot = th
                         except Exception as e:
-                            print("BA chart error: {}".format(e))
+                            print("History chart error: {}".format(e))
 
-                    # sklearn 训练历史
-                    if predictor and predictor.is_fitted and predictor.train_history:
-                        th = predictor.train_history
-                        n = len(th.get("loss", th.get("accuracy", [])))
-                        if n > 0:
-                            try:
-                                hist_fig = Figure(figsize=(7, 4), dpi=150)
-                                ax_h = hist_fig.add_subplot(111)
-                                if "loss" in th:
-                                    ax_h.plot(th["epoch"], th["loss"], color="#E64B35", lw=2, marker="o", markersize=4)
-                                    ax_h.set_ylabel("Loss (RMSE)", fontsize=10)
-                                    ax_h.set_title("Training Loss per Epoch (" + model_name + ")", fontsize=11)
-                                else:
-                                    ax_h.plot(th["epoch"], th["accuracy"], color="#4DBBD5", lw=2, marker="o", markersize=4)
-                                    ax_h.set_ylabel("Accuracy", fontsize=10)
-                                    ax_h.set_title("Training Accuracy per Epoch (" + model_name + ")", fontsize=11)
-                                ax_h.set_xlabel("Epoch", fontsize=10)
-                                ax_h.grid(True, alpha=0.3)
-                                hist_fig.tight_layout()
-                                hist_png_path = str(output_dir / "training_history.png")
-                                hist_fig.savefig(hist_png_path, dpi=150, bbox_inches="tight")
-                                plt.close(hist_fig)
-                                pd.DataFrame.from_dict(th, orient='columns').to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
-                                hist_csv_path = str(output_dir / "training_history.csv")
-                                th_to_plot = th
-                            except Exception as e:
-                                print("History chart error: {}".format(e))
+                # LSTM / CNN1D / PatchTST 训练历史
+                if lstm_pred and lstm_pred.is_fitted and hasattr(lstm_pred, 'train_history'):
+                    th = lstm_pred.train_history
+                    if th and th.get('epoch'):
+                        try:
+                            th_png = plot_training_history(th, target_col_display or target_col, output_dir)
+                            if th_png and Path(th_png).is_file():
+                                hist_png_path = th_png
+                            pd.DataFrame.from_dict(th, orient='columns').to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
+                            hist_csv_path = str(output_dir / "training_history.csv")
+                            th_to_plot = th
+                        except Exception as e:
+                            print("LSTM/CNN1D history error: {}".format(e))
+            except Exception as e:
+                print("非核心文件生成失败: {}".format(e))
 
-                    # LSTM / CNN1D / PatchTST 训练历史（统一格式）
-                    if lstm_pred and lstm_pred.is_fitted and hasattr(lstm_pred, 'train_history'):
-                        th = lstm_pred.train_history
-                        if th and th.get('epoch'):
-                            try:
-                                th_png = plot_training_history(th, target_col_display or target_col, output_dir)
-                                if th_png and Path(th_png).is_file():
-                                    hist_png_path = th_png
-                                pd.DataFrame.from_dict(th, orient='columns').to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
-                                hist_csv_path = str(output_dir / "training_history.csv")
-                                th_to_plot = th
-                            except Exception as e:
-                                print("LSTM/CNN1D history error: {}".format(e))
+            # ── 第三层:ZIP 创建(独立 try,失败不影响返回值) ──
+            try:
                 zip_name = f"ChronoML_{target_col_display or target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}.zip"
                 zip_path = str(output_dir / zip_name)
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    zf.write(output_dir / "forecast.png", arcname="forecast.png")
-                    zf.write(output_dir / "forecast_data.csv", arcname="forecast_data.csv")
-                    zf.write(output_dir / "metrics.json", arcname="metrics.json")
-                    if ba_png_path:
+                    # 核心文件
+                    if Path(forecast_png_path).is_file():
+                        zf.write(forecast_png_path, arcname="forecast.png")
+                    if Path(output_dir / "forecast_data.csv").is_file():
+                        zf.write(output_dir / "forecast_data.csv", arcname="forecast_data.csv")
+                    if Path(output_dir / "metrics.json").is_file():
+                        zf.write(output_dir / "metrics.json", arcname="metrics.json")
+                    # 非核心文件(可选)
+                    if ba_png_path and Path(ba_png_path).is_file():
                         zf.write(ba_png_path, arcname="bland_altman.png")
-                    if ba_csv_path:
+                    if ba_csv_path and Path(ba_csv_path).is_file():
                         zf.write(ba_csv_path, arcname="bland_altman_data.csv")
-                    if hist_png_path:
+                    if hist_png_path and Path(hist_png_path).is_file():
                         zf.write(hist_png_path, arcname="training_history.png")
-                    if hist_csv_path:
+                    if hist_csv_path and Path(hist_csv_path).is_file():
                         zf.write(hist_csv_path, arcname="training_history.csv")
-
                 prog(0.95, desc="打包完成")
             except Exception as e:
-                zip_path = ""
+                print("ZIP 打包失败: {}".format(e))
+                zip_path = None
 
         # 生成训练历史曲线图（用于 UI 显示）
         training_hist_plot = None

@@ -173,17 +173,18 @@ class LSTMPredictor:
                 'train_r2': [], 'val_r2': []
             }
 
-            # 实时绘图初始化
+            # 实时绘图初始化（使用 Agg 后端，无 GUI 环境也能运行）
             try:
                 import matplotlib
-                matplotlib.use('qtagg')
+                matplotlib.use('Agg')
                 import matplotlib.pyplot as plt
-                plt.ion()
                 fig, ax = plt.subplots(figsize=(8, 4))
                 self._fig = fig
                 self._ax = ax
+                self._plt = plt
             except Exception:
                 self._fig = None
+                self._plt = None
 
             self.model.train()
             for epoch in range(epochs):
@@ -257,20 +258,23 @@ class LSTMPredictor:
 
                 scheduler.step(val_mse)
 
-                # 实时更新损失曲线
-                if self._fig is not None:
-                    ax = self._ax
-                    ax.clear()
-                    epochs_range = self.train_history['epoch']
-                    ax.plot(epochs_range, self.train_history['train_loss'], 'b-', label='Train Loss', linewidth=1.5)
-                    ax.plot(epochs_range, self.train_history['val_loss'], 'r-', label='Val Loss', linewidth=1.5)
-                    ax.set_xlabel('Epoch')
-                    ax.set_ylabel('Loss (MSE)')
-                    ax.set_title(f'LSTM Training Progress (Epoch {epoch+1})')
-                    ax.legend()
-                    ax.grid(True, alpha=0.3)
-                    self._fig.canvas.draw()
-                    self._fig.canvas.flush_events()
+                # 实时更新损失曲线（仅在有 GUI 时刷新，避免 headless 报错）
+                if self._fig is not None and self._plt is not None:
+                    try:
+                        ax = self._ax
+                        ax.clear()
+                        epochs_range = self.train_history['epoch']
+                        ax.plot(epochs_range, self.train_history['train_loss'], 'b-', label='Train Loss', linewidth=1.5)
+                        ax.plot(epochs_range, self.train_history['val_loss'], 'r-', label='Val Loss', linewidth=1.5)
+                        ax.set_xlabel('Epoch')
+                        ax.set_ylabel('Loss (MSE)')
+                        ax.set_title(f'LSTM Training Progress (Epoch {epoch+1})')
+                        ax.legend()
+                        ax.grid(True, alpha=0.3)
+                        self._fig.canvas.draw()
+                        self._fig.canvas.flush_events()
+                    except Exception:
+                        pass  # headless 环境 canvas.draw 可能失败，忽略
 
                 # Early stopping
                 if val_mse < best_val_loss:
@@ -294,8 +298,8 @@ class LSTMPredictor:
                     break
 
             # 训练完成：保存损失曲线
-            if self._fig is not None:
-                plt.ioff()
+            if self._fig is not None and self._plt is not None:
+                self._plt.ioff()
                 ax = self._ax
                 ax.clear()
                 epochs_range = self.train_history['epoch']
@@ -310,8 +314,9 @@ class LSTMPredictor:
                 fig_path = 'lstm_loss_curve.png'
                 self._fig.savefig(fig_path, dpi=150)
                 logger.info(f"LSTM loss curve saved: {fig_path}")
-                plt.close(self._fig)
+                self._plt.close(self._fig)
                 self._fig = None
+                self._plt = None
 
             # 恢复最佳模型
             if self.best_state is not None:

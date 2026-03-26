@@ -1,6 +1,7 @@
 ﻿"""
-ChronoML Web 版 - Gradio 界面 v1.04
-改进:智能数据分析 + 用户引导
+ChronoML Web 版 - Gradio 界面 v1.5
+新增:智能预测向导(5步用户引导流程)、CSV解析引擎、数据分析引擎、推荐引擎、自动特征工程
+修复:LSTM matplotlib后端、EnhancedCNN1D预测维度错误、PatchTST predict_future、多处NaN处理
 """
 
 import os
@@ -753,7 +754,7 @@ def plot_bar_forecast(hist, future_preds, target_col, steps_hist, steps_fut, xti
 
 # ============ Gradio 界面 ============
 
-with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
+with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
 
     # 首页介绍
     with gr.Tab("🏠 首页介绍"):
@@ -1802,13 +1803,785 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
     )
     predict_btn.click(on_predict, inputs=[predict_file], outputs=[predict_status, predict_out], queue=False)
 
+    # ============================================================
+    # 🧭 智能预测向导 Tab
+    # ============================================================
+    with gr.Tab("🧭 智能预测向导"):
+
+        # --- 全局状态 ---
+        wizard_state = gr.State({
+            "step": 0,
+            "file_path": None,
+            "parse_config": None,
+            "diagnostics": None,
+            "df_parsed": None,
+            "analysis": None,
+            "answers": None,
+            "recommendation": None,
+            "final_config": None,
+        })
+
+        # --- Step 0: 文件上传 ---
+        gr.Markdown("## 🧭 智能预测向导")
+        gr.Markdown("*上传数据 → 系统分析 → 智能推荐 → 一键预测*")
+        gr.Markdown("---")
+
+        with gr.Row():
+            with gr.Column(scale=1):
+                wiz_file_input = gr.File(
+                    label="📂 上传 CSV 文件",
+                    file_types=[".csv"],
+                    height=80,
+
+                )
+                wiz_diagnostics_md = gr.Markdown("*上传后自动分析...*")
+
+            with gr.Column(scale=1):
+                # --- Step 1: CSV 解析确认 ---
+                gr.Markdown("### 📋 Step 1: 确认数据解析方式")
+                gr.Markdown("*系统已自动检测，可直接确认或手动调整*")
+
+                wiz_has_header = gr.Radio(
+                    label="① 文件有没有表头？",
+                    choices=["系统自动检测（推荐）", "有表头（第一行是列名）", "无表头（手动指定列名）"],
+                    value="系统自动检测（推荐）",
+                    
+                )
+                wiz_date_col = gr.Radio(
+                    label="② 哪列是日期/时间？",
+                    choices=["系统自动检测（推荐）", "无日期列（纯数值索引）"],
+                    value="系统自动检测（推荐）",
+                    
+                )
+                wiz_date_format = gr.Radio(
+                    label="③ 日期格式？",
+                    choices=["系统自动检测（推荐）", "指定格式：%Y-%m-%d", "指定格式：%Y/%m/%d", "指定格式：%Y%m%d", "时间戳（数字）"],
+                    value="系统自动检测（推荐）",
+                    
+                )
+                wiz_separator = gr.Radio(
+                    label="④ 分隔符是什么？",
+                    choices=["系统自动检测（推荐）", "逗号", "分号", "Tab", "空格"],
+                    value="系统自动检测（推荐）",
+                    
+                )
+                wiz_missing_strategy = gr.Radio(
+                    label="⑤ 缺失值如何处理？",
+                    choices=["系统自动检测（推荐）", "删除含缺失的行", "用均值填充", "用前值填充（前向）", "不处理"],
+                    value="系统自动检测（推荐）",
+                    
+                )
+                wiz_confirm_parse_btn = gr.Button("✅ 确认并分析数据 →", variant="primary", size="lg")
+
+        # --- Step 2: 数据概览 ---
+        gr.Markdown("---")
+        gr.Markdown("### 📊 Step 2: 数据概览与分析")
+        wiz_data_overview = gr.Markdown("*确认解析后将显示数据概览...*")
+        wiz_to_config_btn = gr.Button("✅ 下一步：配置预测 →", variant="primary", size="lg", interactive=False)
+
+        # --- Step 3: 预测配置 ---
+        gr.Markdown("---")
+        gr.Markdown("### 🎯 Step 3: 配置预测需求")
+
+        with gr.Row():
+            with gr.Column(scale=1):
+                wiz_target_col = gr.Dropdown(
+                    label="① 目标列（预测什么）？",
+                    choices=[],
+
+                )
+                wiz_pred_len = gr.Radio(
+                    label="② 预测多久以后？",
+                    choices=["短期（7步）", "中期（30步）", "长期（90步）", "自定义"],
+                    value="中期（30步）",
+
+                )
+                wiz_pred_len_custom = gr.Number(
+                    label="自定义步数",
+                    value=30,
+                    visible=False,
+
+                )
+                wiz_external_factors = gr.CheckboxGroup(
+                    label="③ 外部驱动因素（可多选）？",
+                    choices=["湿度", "价格/成本", "节假日", "无外部因素（纯自变量）"],
+
+                )
+                wiz_priority = gr.Radio(
+                    label="④ 优先准确率还是稳定性？",
+                    choices=["准确率优先（允许波动）", "稳定性优先（减少极端误差）", "均衡模式"],
+                    value="准确率优先（允许波动）"
+                )
+                wiz_need_explain = gr.Checkbox(
+                    label="⑤ 显示模型解释（特征重要性）？",
+                    value=False,
+
+                )
+                wiz_generate_btn = gr.Button("🧠 生成推荐方案 →", variant="primary", size="lg")
+
+            with gr.Column(scale=1):
+                wiz_recommendation_md = gr.Markdown("*推荐方案将显示在这里...*")
+                wiz_model_slider_md = gr.Markdown("*可调参数...*")
+
+                # 可调参数（根据推荐动态显示）
+                wiz_seq_len = gr.Slider(label="seq_len（输入窗口）", minimum=12, maximum=256, value=48, step=4)
+                wiz_pred_len_slider = gr.Slider(label="pred_len（预测步数）", minimum=3, maximum=96, value=24, step=1)
+                wiz_epochs = gr.Slider(label="epochs（训练轮数）", minimum=5, maximum=100, value=30, step=5)
+                wiz_lr = gr.Slider(label="learning_rate（学习率）", minimum=0.0001, maximum=0.01, value=0.001, step=0.0005)
+                wiz_model_select = gr.Dropdown(
+                    label="模型",
+                    choices=["PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting"],
+                    value="PatchTST"
+                )
+
+        # --- Step 4: 训练 + 结果 ---
+        gr.Markdown("---")
+        wiz_risk_warnings = gr.Markdown("*风险提示...*")
+        with gr.Row():
+            wiz_cancel_btn = gr.Button("← 上一步", variant="secondary")
+            wiz_train_btn = gr.Button("🚀 开始预测", variant="primary", size="lg")
+
+        gr.Markdown("---")
+        gr.Markdown("### 📈 预测结果")
+        wiz_result_out = gr.Textbox(label="训练结果", lines=6, interactive=False)
+        wiz_forecast_plot = gr.Image(label="趋势预测图")
+        wiz_forecast_text = gr.Textbox(label="预测值", lines=10, interactive=False)
+        wiz_summary_out = gr.Markdown("*趋势总结...*")
+        wiz_download_btn = gr.Button("📥 下载完整结果包", variant="secondary", size="lg")
+        wiz_download_file = gr.File(label="点击下载 zip", interactive=False)
+
+    # ============================================================
+    # 向导事件函数
+    # ============================================================
+
+    def wiz_on_file_upload(file, state):
+        """Step 0: 文件上传 → 自动检测"""
+        if file is None:
+            return {**state, "step": 0, "file_path": None, "diagnostics": None}, \
+                "*请上传 CSV 文件*", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
+        file_path = extract_file_path(file)
+        if not file_path:
+            return {**state, "step": 0}, "*❌ 文件路径无效*", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent / "src"))
+            from src.utils.csv_parser import CSVParser
+
+            parser = CSVParser()
+            config, diagnostics = parser.auto_detect(file_path)
+
+            # 更新 UI 控件
+            header_choices = ["系统自动检测（推荐）", "有表头（第一行是列名）", "无表头（手动指定列名）"]
+            header_default = "系统自动检测（推荐）"
+            if diagnostics.get('has_header'):
+                header_default = "有表头（第一行是列名）"
+            else:
+                header_default = "无表头（手动指定列名）"
+
+            date_col_choices = ["系统自动检测（推荐）", "无日期列（纯数值索引）"]
+            if diagnostics.get('detected_date_col'):
+                date_col_choices.insert(0, f"第 [ {diagnostics['detected_date_col']} ] 列")
+
+            sep_display = diagnostics.get('detected_separator', '逗号')
+            sep_choices = ["系统自动检测（推荐）", "逗号", "分号", "Tab", "空格"]
+            sep_map = {'逗号': '逗号', '分号': '分号', 'Tab': 'Tab', '空格': '空格'}
+            if sep_display in sep_map.values():
+                sep_choices = ["系统自动检测（推荐）"] + [sep_display]
+
+            # 预览表格
+            preview_rows = diagnostics.get('preview_rows', [])
+            preview_df = pd.DataFrame(preview_rows[:10], columns=preview_rows[0] if preview_rows else None) if preview_rows else None
+
+            diag_md = f"""**文件**: `{diagnostics['file_name']}`  
+**大小**: {diagnostics['file_size_mb']} MB  
+**预估行数**: ~{diagnostics.get('estimated_rows', '?')} 行 × {diagnostics.get('detected_cols', '?')} 列  
+**分隔符**: {sep_display}  
+**表头**: {diagnostics.get('detected_header', '?')}  
+**日期列**: {diagnostics.get('detected_date_col', '未检测到')}  
+**数值列**: {diagnostics.get('numeric_cols', [])}"""
+
+            new_state = {
+                **state,
+                "step": 1,
+                "file_path": file_path,
+                "diagnostics": diagnostics,
+                "parse_config": config.to_dict(),
+            }
+
+            return new_state, diag_md, \
+                gr.update(choices=header_choices, value=header_default), \
+                gr.update(choices=date_col_choices), \
+                gr.update(), \
+                gr.update(choices=sep_choices), \
+                gr.update(), \
+                preview_df if preview_df is not None else gr.update(visible=False)
+
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            return {**state, "step": 0}, f"*❌ 解析失败: {str(e)[:100]}*", \
+                gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
+    def wiz_on_confirm_parse(wiz_has_header, wiz_date_col, wiz_date_format,
+                              wiz_separator, wiz_missing_strategy,
+                              state):
+        file_path = state.get("file_path")
+        """Step 1→2: 确认解析配置 → 解析 + 分析"""
+        if not file_path:
+            return "*❌ 请先上传文件*", gr.update(interactive=False), \
+                gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent / "src"))
+            from src.utils.csv_parser import CSVParser
+            from src.utils.data_analyzer import DataAnalyzer
+
+            # 构建 ParseConfig
+            from src.utils.csv_parser import ParseConfig
+            cfg = ParseConfig()
+            cfg.mode = "manual"
+
+            # 表头
+            if wiz_has_header == "有表头（第一行是列名）":
+                cfg.has_header = True
+            elif wiz_has_header == "无表头（手动指定列名）":
+                cfg.has_header = False
+            else:
+                cfg.has_header = state.get('diagnostics', {}).get('has_header', True)
+
+            # 日期列
+            if wiz_date_col and "第 [" in wiz_date_col:
+                import re
+                match = re.search(r'第 \[ (.+?) \]', wiz_date_col)
+                if match:
+                    cfg.date_col = match.group(1)
+            elif wiz_date_col == "无日期列（纯数值索引）":
+                cfg.date_col = None
+            else:
+                cfg.date_col = state.get('diagnostics', {}).get('detected_date_col')
+
+            # 分隔符
+            sep_map = {'逗号': ',', '分号': ';', 'Tab': '\t', '空格': ' '}
+            if wiz_separator in sep_map:
+                cfg.separator = sep_map[wiz_separator]
+            else:
+                cfg.separator = ','
+
+            # 缺失值
+            miss_map = {
+                "删除含缺失的行": "drop",
+                "用均值填充": "fill_mean",
+                "用前值填充（前向）": "fill_forward",
+                "不处理": "none",
+            }
+            if wiz_missing_strategy in miss_map:
+                cfg.missing_strategy = miss_map[wiz_missing_strategy]
+            else:
+                cfg.missing_strategy = "auto"
+
+            # 解析
+            parser = CSVParser()
+            df, parse_report = parser.parse(file_path, cfg)
+
+            # 分析
+            analyzer = DataAnalyzer()
+            date_col = cfg.date_col if cfg.date_col and cfg.date_col != 'auto' else None
+            analysis = analyzer.analyze(df, date_col=date_col)
+
+            # 更新目标列下拉
+            numeric_choices = list(analysis.column_stats.keys())
+            default_target = analysis.suggested_target or (numeric_choices[0] if numeric_choices else None)
+
+            overview_md = f"""**✅ 解析成功**
+
+| 项目 | 值 |
+|------|-----|
+| 数据量 | {analysis.n_samples:,} 行 × {analysis.n_features} 列 |
+| 数值列 | {analysis.n_numeric_cols} 个 |
+| 日期列 | {analysis.date_col or '无'} |
+| 日期范围 | {analysis.date_range[0] if analysis.date_range else '?'} ~ {analysis.date_range[1] if analysis.date_range else '?'} |
+| 时间粒度 | {analysis.time_step_unit or '未知'} |
+| 季节性检测 | {analysis.seasonality_label or '未检测到'} |
+| 缺失值 | {sum(analysis.missing_summary.values()) if analysis.missing_summary else 0} 个 |
+| 推荐目标 | **{analysis.suggested_target}**（{analysis.suggested_target_reason or ''}）|
+| 推荐 seq_len | {analysis.suggested_seq_len} |
+| 推荐 pred_len | {analysis.suggested_pred_len} |
+
+**⚠️ 警告**: {analysis.warnings[0] if analysis.warnings else '无'}
+"""
+            if not numeric_choices:
+                overview_md += "\n\n*❌ 未检测到数值列，无法进行时序预测*"
+
+            new_state = {
+                **state,
+                "step": 2,
+                "df_parsed": df,
+                "analysis": analysis.to_dict(),
+                "parse_config": cfg.to_dict(),
+            }
+
+            return overview_md, gr.update(interactive=True), \
+                gr.update(choices=numeric_choices, value=default_target), \
+                gr.update(value="中期（30步）"), \
+                gr.update(choices=["湿度", "价格/成本", "节假日", "无外部因素（纯自变量）"]), \
+                gr.update(value=analysis.suggested_seq_len), \
+                gr.update(value=analysis.suggested_pred_len), \
+                gr.update(value="准确率优先（允许波动）")
+
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            return f"*❌ 解析/分析失败: {str(e)[:200]}*", gr.update(interactive=False), \
+                gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
+    def wiz_on_generate_recommendation(wiz_target_col, wiz_pred_len, wiz_pred_len_custom,
+                                        wiz_external_factors, wiz_priority, wiz_need_explain,
+                                        wiz_seq_len, state):
+        """Step 2→3: 用户配置 → 生成推荐"""
+        if not wiz_target_col:
+            return "*❌ 请选择目标列*", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent / "src"))
+            from src.utils.data_analyzer import DataAnalyzer, AnalysisResult
+            from src.utils.recommendation_engine import RecommendationEngine
+
+            # 重建 analysis 对象
+            analysis_dict = state.get('analysis', {})
+            analysis = AnalysisResult()
+            for k, v in analysis_dict.items():
+                setattr(analysis, k, v)
+
+            # 解析预测步数
+            if wiz_pred_len == "自定义":
+                user_pred = int(wiz_pred_len_custom) if wiz_pred_len_custom else 30
+            elif "7步" in wiz_pred_len:
+                user_pred = 7
+            elif "90步" in wiz_pred_len:
+                user_pred = 90
+            else:
+                user_pred = 30
+
+            # 解析外部因素
+            ext_factors = [f for f in (wiz_external_factors or []) if f != "无外部因素（纯自变量）"]
+
+            # 优先级
+            if "稳定性" in wiz_priority:
+                priority = "stability"
+            elif "均衡" in wiz_priority:
+                priority = "balanced"
+            else:
+                priority = "accuracy"
+
+            user_answers = {
+                'pred_len': user_pred,
+                'external_factors': ext_factors,
+                'priority': priority,
+                'need_explain': wiz_need_explain,
+            }
+
+            # 推荐
+            engine = RecommendationEngine()
+            recommendation = engine.recommend(analysis, user_answers)
+
+            # 推荐卡片
+            risk_md = ""
+            if recommendation.risk_warnings:
+                risk_md = "**⚠️ 风险提示:**\n" + "\n".join(f"  • {w}" for w in recommendation.risk_warnings)
+            else:
+                risk_md = "**✅ 未检测到明显风险**"
+
+            reason_md = f"""**🧠 智能推荐结果**
+
+**推荐模型**: `{recommendation.model}`  
+**推荐理由**: {recommendation.reason}  
+**置信度**: {recommendation.confidence:.0%}
+
+**推荐参数**:
+| 参数 | 值 |
+|------|-----|
+| seq_len | {recommendation.seq_len} |
+| pred_len | {recommendation.pred_len} |
+| epochs | {recommendation.epochs} |
+| learning_rate | {recommendation.learning_rate} |
+| dropout | {recommendation.dropout} |
+
+{risk_md}
+"""
+
+            new_state = {
+                **state,
+                "step": 3,
+                "answers": user_answers,
+                "recommendation": recommendation.to_dict(),
+                "final_config": {
+                    'target_col': wiz_target_col,
+                    'model': recommendation.model,
+                    'seq_len': recommendation.seq_len,
+                    'pred_len': recommendation.pred_len,
+                    'epochs': recommendation.epochs,
+                    'learning_rate': recommendation.learning_rate,
+                    'dropout': recommendation.dropout,
+                    'hidden_size': recommendation.hidden_size,
+                    'num_layers': recommendation.num_layers,
+                    'd_model': recommendation.d_model,
+                    'n_heads': recommendation.n_heads,
+                    'n_layers_trans': recommendation.n_layers_trans,
+                    'd_ff': recommendation.d_ff,
+                    'patch_size': recommendation.patch_size,
+                    'hidden_channels': recommendation.hidden_channels,
+                    'batch_size': recommendation.batch_size,
+                    'predict_mode': recommendation.predict_mode,
+                }
+            }
+
+            return reason_md, \
+                gr.update(value=recommendation.seq_len, minimum=12, maximum=min(256, analysis.n_samples // 2)), \
+                gr.update(value=recommendation.pred_len, maximum=min(recommendation.seq_len, analysis.n_samples // 3)), \
+                gr.update(value=recommendation.epochs), \
+                gr.update(value=recommendation.learning_rate), \
+                gr.update(choices=[recommendation.model] + [m for m in ["PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting"] if m != recommendation.model], value=recommendation.model), \
+                new_state
+
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            return f"*❌ 推荐生成失败: {str(e)[:200]}*", \
+                gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), state
+
+    def wiz_on_train(wiz_model, wiz_seq_len, wiz_pred_len, wiz_epochs, wiz_lr,
+                     wiz_target_col, wiz_external_factors, state):
+        """Step 3→4: 开始训练"""
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent / "src"))
+            from src.utils.feature_engine import FeatureEngine, FeatureConfig
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            import zipfile
+            import json
+            from pathlib import Path
+
+            df = state.get('df_parsed')
+            if df is None:
+                return "*❌ 数据无效，请重新上传*", None, None, None, gr.update()
+
+            target_col = wiz_target_col
+            seq_len = int(wiz_seq_len)
+            pred_len = int(wiz_pred_len)
+            epochs = int(wiz_epochs)
+            lr = float(wiz_lr)
+            model_name = wiz_model
+
+            # 准备数据
+            analysis_dict = state.get('analysis', {})
+            seasonality = analysis_dict.get('detected_seasonality')
+            time_unit = analysis_dict.get('time_step_unit')
+            date_col = analysis_dict.get('date_col')
+
+            # 自动特征工程
+            fe = FeatureEngine()
+            feat_cfg = fe.suggest_config(seasonality, time_unit)
+            feat_cfg.target_col = target_col
+            df_enhanced, new_features = fe.build(df, target_col, date_col, seasonality, feat_cfg)
+
+            # 准备 X, y
+            numeric_cols = list(df_enhanced.select_dtypes(include=[np.number]).columns)
+            y = df_enhanced[target_col].values.astype(np.float32)
+            feature_cols = [c for c in numeric_cols if c != target_col]
+
+            # lag/rolling 特征在前 N 行有 NaN，移除这些行；剩余 NaN 用 0 填充
+            n_drop = max(7, min(30, len(df_enhanced) // 10))
+            if feature_cols:
+                X_df_feat = df_enhanced[feature_cols].iloc[n_drop:].fillna(0)
+            else:
+                X_df_feat = pd.DataFrame({'__target__': y[n_drop:]})
+            X = X_df_feat.values.astype(np.float32)
+            y = y[n_drop:]
+
+            # 获取最终配置中的其他参数
+            rec = state.get('recommendation', {})
+            hidden_size = rec.get('hidden_size', 64)
+            num_layers = rec.get('num_layers', 2)
+            dropout = rec.get('dropout', 0.2)
+            batch_size = rec.get('batch_size', 32)
+            d_model = rec.get('d_model', 128)
+            n_heads = rec.get('n_heads', 4)
+            n_layers_trans = rec.get('n_layers_trans', 3)
+            d_ff = rec.get('d_ff', 256)
+            patch_size = rec.get('patch_size', 16)
+            hidden_channels = rec.get('hidden_channels', 64)
+
+            msg_out = ""
+            lstm_pred = None
+            predictor = None
+            future_preds = None
+            th = None
+            metrics = {}
+
+            # 训练
+            if model_name == "LSTM":
+                from src.models.lstm_model import LSTMPredictor
+                lstm_pred = LSTMPredictor()
+                ok, msg = lstm_pred.train(X, y, seq_len=min(seq_len, max(5, len(X)//5)),
+                                          hidden_size=hidden_size, num_layers=num_layers,
+                                          epochs=min(epochs, 50), batch_size=batch_size,
+                                          learning_rate=lr, dropout=dropout,
+                                          target_col=target_col)
+                if ok:
+                    future_preds = lstm_pred.predict_future(X, steps=min(pred_len, 30))
+                    th = lstm_pred.train_history
+                    metrics = lstm_pred.metrics
+
+            elif model_name == "PatchTST":
+                from src.models.patchtst_model import PatchTSTPredictor
+                lstm_pred = PatchTSTPredictor()
+                auto_seq = min(seq_len, max(5, len(X)//5))
+                auto_pred = min(pred_len, max(1, auto_seq//2))
+                ok, msg = lstm_pred.train(X, y, seq_len=auto_seq, pred_len=auto_pred,
+                                          d_model=d_model, n_heads=n_heads, n_layers=n_layers_trans,
+                                          d_ff=d_ff, patch_size=patch_size,
+                                          epochs=min(epochs, 30), batch_size=batch_size,
+                                          learning_rate=lr, dropout=dropout,
+                                          target_col=target_col)
+                if ok:
+                    future_preds = lstm_pred.predict_future(X, steps=min(pred_len, 30))
+                    th = lstm_pred.train_history
+                    metrics = lstm_pred.metrics
+
+            elif model_name == "EnhancedCNN1D":
+                from src.models.cnn1d_complex import EnhancedCNN1DPredictor
+                lstm_pred = EnhancedCNN1DPredictor()
+                auto_seq = min(seq_len, max(5, len(X)//5))
+                auto_pred = min(pred_len, max(1, auto_seq//2))
+                ok, msg = lstm_pred.train(X, y, seq_len=auto_seq, pred_len=auto_pred,
+                                          hidden_channels=hidden_channels,
+                                          epochs=min(epochs, 50), batch_size=batch_size,
+                                          learning_rate=lr, dropout=dropout)
+                if ok:
+                    future_preds = lstm_pred.predict_future(X, steps=min(pred_len, 30))
+                    th = lstm_pred.train_history
+                    metrics = lstm_pred.metrics
+
+            elif model_name == "GradientBoosting":
+                from sklearn.ensemble import GradientBoostingRegressor
+                from sklearn.model_selection import train_test_split
+                from sklearn.preprocessing import StandardScaler
+                scaler = StandardScaler()
+                X_scaled = scaler.fit_transform(X)
+                X_tr, X_te, y_tr, y_te = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+                m = GradientBoostingRegressor(n_estimators=min(50, epochs), max_depth=3, learning_rate=lr, random_state=42)
+                m.fit(X_tr, y_tr)
+                from sklearn.metrics import mean_squared_error, r2_score
+                y_pred = m.predict(X_te)
+                metrics = {
+                    'RMSE': float(np.sqrt(mean_squared_error(y_te, y_pred))),
+                    'R2': float(r2_score(y_te, y_pred)),
+                    'MAE': float(np.mean(np.abs(y_te - y_pred))),
+                    'model': 'GradientBoosting'
+                }
+                future_preds = m.predict(X_scaled[-1].reshape(1, -1))
+                future_preds = np.array([float(future_preds[0])] * min(pred_len, 30))
+                msg = f"**GradientBoosting** 训练完成：R²={metrics['R2']:.4f}"
+
+                # 构造 training history（模拟 staged_predict）
+                n_est = min(50, epochs)
+                th = {'epoch': list(range(1, n_est + 1)),
+                      'train_loss': [], 'val_loss': [],
+                      'train_mae': [], 'val_mae': [],
+                      'train_r2': [], 'val_r2': []}
+                for i in range(1, n_est + 1):
+                    m_i = GradientBoostingRegressor(n_estimators=i, max_depth=3, learning_rate=lr, random_state=42)
+                    m_i.fit(X_tr, y_tr)
+                    tr_pred = m_i.predict(X_tr)
+                    te_pred = m_i.predict(X_te)
+                    th['train_loss'].append(float(np.sqrt(mean_squared_error(y_tr, tr_pred))))
+                    th['val_loss'].append(float(np.sqrt(mean_squared_error(y_te, te_pred))))
+                    th['train_mae'].append(float(np.mean(np.abs(y_tr - tr_pred))))
+                    th['val_mae'].append(float(np.mean(np.abs(y_te - te_pred))))
+                    ss_res = np.sum((y_tr - tr_pred) ** 2)
+                    ss_tot = np.sum((y_tr - np.mean(y_tr)) ** 2)
+                    th['train_r2'].append(float(1 - ss_res / (ss_tot + 1e-8)))
+                    ss_res_v = np.sum((y_te - te_pred) ** 2)
+                    ss_tot_v = np.sum((y_te - np.mean(y_te)) ** 2)
+                    th['val_r2'].append(float(1 - ss_res_v / (ss_tot_v + 1e-8)))
+
+            if msg and future_preds is not None:
+                msg_out = f"{msg}\n\n**指标**: RMSE={metrics.get('RMSE', 'N/A'):.4f}, R²={metrics.get('R2', 'N/A'):.4f}, MAE={metrics.get('MAE', 'N/A'):.4f}"
+            else:
+                msg_out = msg or "训练失败"
+
+            # 绘图
+            plot_path = None
+            if future_preds is not None and len(future_preds) > 0:
+                last_n = min(100, len(y))
+                hist_vals = y[-last_n:]
+                steps_h = list(range(last_n))
+                steps_f = list(range(last_n, last_n + len(future_preds)))
+
+                fig, ax = plt.subplots(figsize=(10, 4))
+                ax.plot(steps_h, hist_vals, color='#3B82F6', lw=2, label='历史')
+                ax.plot(steps_f, future_preds, color='#FF6B2B', lw=2, ls='--', label='预测')
+                ax.axvline(last_n - 0.5, color='gray', ls=':', lw=1.5)
+                ax.set_xlabel('时间步')
+                ax.set_ylabel(target_col)
+                ax.set_title(f'{target_col} - {model_name}')
+                ax.legend()
+                ax.grid(alpha=0.3)
+                plt.tight_layout()
+
+                output_dir = Path(__file__).parent / "outputs" / "wizard"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                plot_path = str(output_dir / f"wizard_{target_col}_{model_name}.png")
+                fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+                plt.close(fig)
+
+            # 预测值文本
+            fc_lines = [f"**未来 {len(future_preds) if future_preds is not None else 0} 步预测值 ({target_col}):**"]
+            if future_preds is not None:
+                for i, v in enumerate(future_preds[:20]):
+                    fc_lines.append(f"  第 {i+1} 步: **{float(v):.4f}**")
+                if len(future_preds) > 20:
+                    fc_lines.append(f"  ... (共 {len(future_preds)} 步)")
+
+            fc_text = "\n".join(fc_lines)
+
+            # 趋势总结
+            if future_preds is not None and len(future_preds) > 1:
+                first_v = float(future_preds[0])
+                last_v = float(future_preds[-1])
+                change = last_v - first_v
+                pct = change / abs(first_v) * 100 if first_v != 0 else 0
+                if change > 0:
+                    trend = "📈 **上升趋势**"
+                elif change < 0:
+                    trend = "📉 **下降趋势**"
+                else:
+                    trend = "➡️ **基本平稳**"
+                summary = f"{trend}，从 {first_v:.4f} 到 {last_v:.4f}（{'+' if pct >= 0 else ''}{pct:.1f}%）"
+            else:
+                summary = "*趋势分析完成*"
+
+            # 打包 ZIP
+            zip_path = None
+            if plot_path and future_preds is not None:
+                try:
+                    output_dir = Path(__file__).parent / "outputs" / "wizard"
+                    zip_name = f"ChronoML_{target_col}_{model_name}_wizard.zip"
+                    zip_path = str(output_dir / zip_name)
+
+                    # 预测 CSV
+                    fc_csv = str(output_dir / "forecast_data.csv")
+                    pd.DataFrame({
+                        'step': steps_h + steps_f,
+                        'type': ['历史']*len(steps_h) + ['预测']*len(steps_f),
+                        target_col: list(hist_vals) + [float(v) for v in future_preds]
+                    }).to_csv(fc_csv, index=False, encoding='utf-8-sig')
+
+                    # metrics JSON
+                    mt_json = str(output_dir / "metrics.json")
+                    with open(mt_json, 'w', encoding='utf-8') as f:
+                        json.dump({'model': model_name, 'target': target_col, 'metrics': metrics,
+                                   'seq_len': seq_len, 'pred_len': pred_len,
+                                   'new_features': new_features[:10]}, f, indent=2)
+
+                    # history CSV
+                    hist_csv = str(output_dir / "training_history.csv")
+                    if th and th.get('epoch'):
+                        pd.DataFrame.from_dict(th, orient='columns').to_csv(hist_csv, index=False, encoding='utf-8-sig')
+
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        zf.write(plot_path, "forecast.png")
+                        zf.write(fc_csv, "forecast_data.csv")
+                        zf.write(mt_json, "metrics.json")
+                        hist_p = str(output_dir / "training_history.csv")
+                        if Path(hist_p).is_file():
+                            zf.write(hist_p, "training_history.csv")
+
+                    logger.info(f"Wizard ZIP 已打包: {zip_path}")
+                except Exception as e:
+                    logger.warning(f"ZIP 打包失败: {e}")
+
+            return msg_out, \
+                plot_path if plot_path else None, \
+                fc_text, \
+                summary, \
+                zip_path if zip_path else "",
+
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            return f"*❌ 训练异常: {str(e)[:200]}*", None, None, None, ""
+
+
+    # ============================================================
+    # 绑定向导事件
+    # ============================================================
+
+    def wiz_show_custom_pred_len(wiz_pred_len):
+        return gr.update(visible=("自定义" in wiz_pred_len))
+
+    wiz_pred_len.change(wiz_show_custom_pred_len, inputs=[wiz_pred_len], outputs=[wiz_pred_len_custom])
+
+    wiz_file_input.change(
+        wiz_on_file_upload,
+        inputs=[wiz_file_input, wizard_state],
+        outputs=[wizard_state, wiz_diagnostics_md, wiz_has_header, wiz_date_col,
+                  wiz_date_format, wiz_separator, wiz_missing_strategy, wiz_data_overview],
+        queue=False
+    )
+
+    wiz_confirm_parse_btn.click(
+        wiz_on_confirm_parse,
+        inputs=[wiz_has_header, wiz_date_col, wiz_date_format, wiz_separator,
+                 wiz_missing_strategy, wizard_state],
+        outputs=[wiz_data_overview, wiz_to_config_btn, wiz_target_col,
+                  wiz_pred_len, wiz_external_factors, wiz_seq_len,
+                  wiz_pred_len_slider, wiz_priority],
+        queue=False
+    )
+
+    wiz_to_config_btn.click(
+        lambda s: (gr.update(interactive=True) if s.get('step', 0) >= 2 else gr.update()),
+        inputs=[wizard_state],
+        outputs=[wiz_generate_btn],
+        queue=False
+    )
+
+    wiz_generate_btn.click(
+        wiz_on_generate_recommendation,
+        inputs=[wiz_target_col, wiz_pred_len, wiz_pred_len_custom,
+                 wiz_external_factors, wiz_priority, wiz_need_explain,
+                 wiz_seq_len, wizard_state],
+        outputs=[wiz_recommendation_md, wiz_seq_len, wiz_pred_len_slider,
+                  wiz_epochs, wiz_lr, wiz_model_select, wizard_state],
+        queue=False
+    )
+
+    wiz_train_btn.click(
+        wiz_on_train,
+        inputs=[wiz_model_select, wiz_seq_len, wiz_pred_len_slider, wiz_epochs, wiz_lr,
+                 wiz_target_col, wiz_external_factors, wizard_state],
+        outputs=[wiz_result_out, wiz_forecast_plot, wiz_forecast_text,
+                  wiz_summary_out, wiz_download_file],
+        queue=False
+    )
+
+    wiz_download_btn.click(
+        lambda zip_path: zip_path if zip_path else "",
+        inputs=[wiz_download_file],
+        outputs=[wiz_download_file],
+        queue=False
+    )
+
 
 if __name__ == "__main__":
     # Railway / HuggingFace Spaces 用 PORT 环境变量
     import os
     port = int(os.environ.get("PORT", 7861))
     print("=" * 60)
-    print("  ChronoML Web 版 v1.04 已启动!")
+    print("  ChronoML Web 版 v1.5 已启动!")
     print(f"  访问地址: http://127.0.0.1:{port}")
     print("  同一局域网内的手机/电脑都可以访问")
     print("  按 Ctrl+C 停止")

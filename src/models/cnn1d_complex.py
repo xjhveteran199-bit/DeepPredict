@@ -214,6 +214,13 @@ class EnhancedCNN1DPredictor:
         self._bias_offset: float = 0.0
         self.seq_len: int = 96
         self.pred_len: int = 48
+        self.n_features: int = 1
+        self.train_history: Dict[str, list] = {
+            'epoch': [], 'train_loss': [], 'val_loss': [],
+            'train_mae': [], 'val_mae': [],
+            'train_r2': [], 'val_r2': []
+        }
+        self._x_scaler = None  # 多变量 X 标准化器
 
     def train(
         self,
@@ -316,6 +323,15 @@ class EnhancedCNN1DPredictor:
                 optimizer, T_0=10, T_mult=2, eta_min=learning_rate * 0.01
             )
 
+            # 初始化训练历史
+            self.train_history = {
+                'epoch': [], 'train_loss': [], 'val_loss': [],
+                'train_mae': [], 'val_mae': [],
+                'train_r2': [], 'val_r2': []
+            }
+            best_val_loss = float('inf')
+            best_state = None
+
             # 训练
             self.model.train()
             for epoch in range(epochs):
@@ -338,10 +354,50 @@ class EnhancedCNN1DPredictor:
                     n_batches += 1
 
                 scheduler.step()
+                avg_train_loss = epoch_loss / max(n_batches, 1)
+
+                # 每轮计算验证集指标
+                self.model.eval()
+                with torch.no_grad():
+                    val_pred_norm = self.model(X_test.to(self.device)).cpu().numpy()
+                    y_test_np = y_test.numpy()
+                    val_pred = val_pred_norm * self._target_std + self._target_mean
+                    y_test_actual = y_test_np * self._target_std + self._target_mean
+                    val_mse = float(np.mean((val_pred - y_test_actual) ** 2))
+                    val_mae = float(mean_absolute_error(y_test_actual.flatten(), val_pred.flatten()))
+                    ss_res = np.sum((y_test_actual - val_pred) ** 2)
+                    ss_tot = np.sum((y_test_actual - np.mean(y_test_actual)) ** 2)
+                    val_r2 = float(1 - ss_res / (ss_tot + 1e-8))
+
+                    train_pred_norm = self.model(X_train.to(self.device)).cpu().numpy()
+                    train_pred = train_pred_norm * self._target_std + self._target_mean
+                    y_train_actual = y_train.numpy() * self._target_std + self._target_mean
+                    train_mse = float(np.mean((train_pred - y_train_actual) ** 2))
+                    train_mae = float(mean_absolute_error(y_train_actual.flatten(), train_pred.flatten()))
+                    ss_res_tr = np.sum((y_train_actual - train_pred) ** 2)
+                    ss_tot_tr = np.sum((y_train_actual - np.mean(y_train_actual)) ** 2)
+                    train_r2 = float(1 - ss_res_tr / (ss_tot_tr + 1e-8))
+
+                self.train_history['epoch'].append(epoch + 1)
+                self.train_history['train_loss'].append(avg_train_loss)
+                self.train_history['val_loss'].append(val_mse)
+                self.train_history['train_mae'].append(train_mae)
+                self.train_history['val_mae'].append(val_mae)
+                self.train_history['train_r2'].append(train_r2)
+                self.train_history['val_r2'].append(val_r2)
+
+                if val_mse < best_val_loss:
+                    best_val_loss = val_mse
+                    best_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
 
                 if (epoch + 1) % 10 == 0:
-                    avg_loss = epoch_loss / max(n_batches, 1)
-                    logger.info(f"Enhanced 1D-CNN Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}")
+                    logger.info(f"Enhanced 1D-CNN Epoch {epoch+1}/{epochs}, TrainLoss: {avg_train_loss:.6f}, ValMSE: {val_mse:.6f}, ValR2: {val_r2:.4f}")
+
+            # 恢复最佳模型
+            if best_state is not None:
+                self.model.load_state_dict(best_state)
+                self.model.to(self.device)
+                logger.info("EnhancedCNN1D restored best model state")
 
             # 评估
             self.model.eval()
@@ -407,7 +463,13 @@ class EnhancedCNN1DPredictor:
 
         if X.ndim == 1:
             X = X.reshape(-1, 1)
-        x_input = X[-self.seq_len:]
+
+        # 关键修复：必须使用训练时的 scaler 对 X 归一化
+        if self._x_scaler is not None:
+            x_input = self._x_scaler.transform(X[-self.seq_len:].astype(np.float64))
+        else:
+            x_input = X[-self.seq_len:]
+
         x_tensor = torch.FloatTensor(x_input).unsqueeze(0).to(self.device)
 
         self.model.eval()
@@ -426,10 +488,19 @@ class EnhancedCNN1DPredictor:
         if original_1d:
             X = X.reshape(-1, 1)
 
+        n_features = X.shape[1]
         all_preds = []
+
         for _ in range(steps):
             x_input = X[-self.seq_len:]
-            x_tensor = torch.FloatTensor(x_input).unsqueeze(0).to(self.device)
+
+            # 关键修复：必须使用训练时的 scaler 对 X 归一化
+            if self._x_scaler is not None:
+                x_scaled = self._x_scaler.transform(x_input.astype(np.float64))
+            else:
+                x_scaled = x_input
+
+            x_tensor = torch.FloatTensor(x_scaled).unsqueeze(0).to(self.device)
 
             self.model.eval()
             with torch.no_grad():
@@ -437,7 +508,11 @@ class EnhancedCNN1DPredictor:
 
             pred = float(pred_norm[0] * self._target_std + self._target_mean - self._bias_offset)
             all_preds.append(pred)
-            X = np.vstack([X, [[pred]]])
+
+            # 修复：追加正确维度的行（保持 n_features 不变）
+            new_row = np.zeros(n_features, dtype=np.float64)
+            new_row[0] = pred  # 第一个特征列用预测值更新
+            X = np.vstack([X, new_row.reshape(1, -1)])
 
         result = np.array(all_preds)
         return result.squeeze() if original_1d and result.ndim > 1 else result

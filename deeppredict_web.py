@@ -18,7 +18,16 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import sys
+import logging
 from gradio.data_classes import ListFiles, FileData
+
+# 设置 logger
+logger = logging.getLogger("ChronoML")
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
 
 # 添加 src 路径
 sys.path.insert(0, str(Path(__file__).parent / "src"))

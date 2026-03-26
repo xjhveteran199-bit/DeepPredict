@@ -1,5 +1,5 @@
 ﻿"""
-DeepPredict Web 版 - Gradio 界面 v1.04
+ChronoML Web 版 - Gradio 界面 v1.04
 改进:智能数据分析 + 用户引导
 """
 
@@ -744,7 +744,7 @@ def plot_bar_forecast(hist, future_preds, target_col, steps_hist, steps_fut, xti
 
 # ============ Gradio 界面 ============
 
-with gr.Blocks(title="DeepPredict v1.04 - 图表定制+下载版") as demo:
+with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
 
     # 首页介绍
     with gr.Tab("🏠 首页介绍"):
@@ -1639,7 +1639,7 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 7861))
     print("=" * 60)
-    print("  DeepPredict Web 版 v1.04 已启动!")
+    print("  ChronoML Web 版 v1.04 已启动!")
     print(f"  访问地址: http://127.0.0.1:{port}")
     print("  同一局域网内的手机/电脑都可以访问")
     print("  按 Ctrl+C 停止")

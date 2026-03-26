@@ -1,4 +1,4 @@
-# DeepPredict v1.04 Release Notes
+# ChronoML v1.04 Release Notes
 
 ## What's New in v1.04
 

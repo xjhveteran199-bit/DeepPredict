@@ -1,4 +1,4 @@
-# 🧠 DeepPredict - 零门槛深度学习预测工具
+# 🧠 ChronoML - 零门槛时序预测工具
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
@@ -30,8 +30,8 @@
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/xjhveteran199-bit/DeepPredict.git
-cd DeepPredict
+git clone https://github.com/xjhveteran199-bit/ChronoML.git
+cd ChronoML
 
 # 2. 创建虚拟环境（推荐）
 python -m venv .venv
@@ -49,7 +49,7 @@ pip install -r requirements.txt
 python deeppredict_web.py
 ```
 
-安装完成后，打开浏览器访问：**http://localhost:7860**
+安装完成后，打开浏览器访问：**http://localhost:7861**
 
 ---
 

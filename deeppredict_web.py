@@ -835,9 +835,10 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                     )
 
                     target_col = gr.Dropdown(
-                        label="2 选择目标列 Y(要预测什么)",
+                        label="2 选择目标列 Y(要预测什么，可多选)",
                         choices=[],
-                        info="选择你要预测的目标变量"
+                        info="选择你要预测的目标变量，多选可实现多目标同时预测",
+                        multiselect=True
                     )
 
                     predict_mode = gr.Radio(
@@ -890,6 +891,9 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
 
                     gr.Markdown("### 📊 训练结果(模型评价)")
                     result_out = gr.Textbox(label="", lines=6, interactive=False)
+
+                    gr.Markdown("### 📉 训练历史曲线(Loss & R²)")
+                    training_history_plot = gr.Plot(label="训练历史")
 
                     gr.Markdown("### 📈 未来趋势预测")
                     forecast_plot = gr.Image(label="趋势预测图(蓝色=历史,橙色=预测)")
@@ -1022,14 +1026,91 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
             gr.update(choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"], value="自动推荐")
         ]
 
+    def plot_training_history(history, target_col, output_dir=None):
+        """绘制训练历史曲线（Loss + R²），Nature 配色，300 DPI"""
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            import os
+
+            if output_dir is None:
+                output_dir = Path(__file__).parent.resolve() / "outputs"
+
+            # Nature 配色方案
+            NATURE_BLUE = "#3B82F6"
+            NATURE_RED = "#EF4444"
+            NATURE_GREEN = "#10B981"
+            NATURE_ORANGE = "#F59E0B"
+            NATURE_GRAY = "#6B7280"
+
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5), dpi=100)
+
+            # 左图：Loss
+            ax_loss = axes[0]
+            epochs = history.get('epoch', list(range(1, len(history.get('train_loss', [])) + 1)))
+            ax_loss.plot(epochs, history.get('train_loss', []), color=NATURE_BLUE,
+                         linewidth=2, marker='o', markersize=3, label='Train Loss')
+            if history.get('val_loss'):
+                ax_loss.plot(epochs, history.get('val_loss', []), color=NATURE_RED,
+                             linewidth=2, marker='s', markersize=3, label='Val Loss')
+            ax_loss.set_xlabel('Epoch', fontsize=12)
+            ax_loss.set_ylabel('Loss (MSE)', fontsize=12)
+            ax_loss.set_title(f'{target_col} - Training Loss', fontsize=13, fontweight='bold')
+            ax_loss.legend(fontsize=10)
+            ax_loss.grid(True, alpha=0.3)
+            ax_loss.set_facecolor('#FAFAFA')
+
+            # 右图：R²
+            ax_r2 = axes[1]
+            if history.get('train_r2'):
+                ax_r2.plot(epochs, history.get('train_r2', []), color=NATURE_GREEN,
+                           linewidth=2, marker='o', markersize=3, label='Train R²')
+            if history.get('val_r2'):
+                ax_r2.plot(epochs, history.get('val_r2', []), color=NATURE_ORANGE,
+                           linewidth=2, marker='s', markersize=3, label='Val R²')
+            ax_r2.set_xlabel('Epoch', fontsize=12)
+            ax_r2.set_ylabel('R² Score', fontsize=12)
+            ax_r2.set_title(f'{target_col} - Accuracy (R²)', fontsize=13, fontweight='bold')
+            ax_r2.legend(fontsize=10)
+            ax_r2.grid(True, alpha=0.3)
+            ax_r2.set_facecolor('#FAFAFA')
+
+            # 如果有 MAE，在右图叠加
+            if history.get('val_mae') and history.get('val_r2'):
+                ax_mae = ax_r2.twinx()
+                ax_mae.plot(epochs, history.get('val_mae', []), color=NATURE_GRAY,
+                            linewidth=1.5, linestyle='--', marker='^', markersize=2, label='Val MAE')
+                ax_mae.set_ylabel('MAE', fontsize=10, color=NATURE_GRAY)
+                ax_mae.tick_params(axis='y', labelcolor=NATURE_GRAY)
+
+            plt.tight_layout()
+
+            save_path = output_dir / 'training_history.png'
+            plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
+            plt.close(fig)
+            logger.info(f"Training history plot saved: {save_path}")
+            return str(save_path)
+        except Exception as e:
+            logger.warning(f"Failed to plot training history: {e}")
+            return None
+
     def on_train(feature_col, target_col, predict_mode, model_select, requirement, n_future_val, n_future_unit, chart_requirement, prog=gr.Progress()):
         global predictor, lstm_pred
 
         if data_loader.df is None:
-            return ["❌ 请先上传数据", "", "", None, "", "", ""]
+            return ["❌ 请先上传数据", "", "", None, "", "", "", None]
 
         if not target_col:
-            return ["❌ 请选择目标列 Y", "", "", None, "", ""]
+            return ["❌ 请选择目标列 Y", "", "", None, "", "", "", None]
+
+        # 处理 target_col 多选情况
+        if isinstance(target_col, list):
+            target_cols_list = target_col if target_col else []
+            target_col_display = ','.join(target_cols_list[:3]) + ('...' if len(target_cols_list) > 3 else '')
+        else:
+            target_cols_list = [target_col] if target_col else []
+            target_col_display = str(target_col) if target_col else ''
 
         prog(0.1, desc="解析任务...")
 
@@ -1058,16 +1139,23 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
 
         # 获取数据信息
         numeric_cols = list(data_loader.df.select_dtypes(include=['number']).columns)
-        if target_col not in numeric_cols:
-            return [f"❌ 目标列 [{target_col}] 不是数值列", "", "", None, "", "", ""]
+
+        # 多选时检查所有目标列是否有效
+        if isinstance(target_cols_list, list) and len(target_cols_list) > 1:
+            invalid = [c for c in target_cols_list if c not in numeric_cols]
+            if invalid:
+                return [f"❌ 以下目标列不是数值列: {invalid}", "", "", None, "", "", "", None]
+        elif target_cols_list and target_cols_list[0] not in numeric_cols:
+            return [f"❌ 目标列 [{target_cols_list[0]}] 不是数值列", "", "", None, "", "", "", None]
 
         # 根据预测模式决定数据准备方式
         data_type = data_loader.data_structure['type'] if data_loader.data_structure else 'unknown'
         use_univariate = (predict_mode == "单变量时序(推荐)") or (data_type == 'single_variable')
 
         if use_univariate:
-            # 单变量时序:用 Y 自己的历史值预测未来
-            y = data_loader.df[target_col].values.astype(np.float32)
+            # 单变量时序:用 Y 自己的历史值预测未来（支持多选）
+            y_df = data_loader.df[target_cols_list if isinstance(target_cols_list, list) else [target_cols_list]]
+            y = y_df.values.astype(np.float32)
             if feature_col and feature_col in data_loader.df.columns:
                 # 用户指定了 X 时间轴:按 X 排序后做预测
                 x_raw = data_loader.df[feature_col].values
@@ -1078,7 +1166,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                     y = y[sort_idx]
                     feature_cols_used = f"X={feature_col}(用户指定时间轴)"
                 except Exception:
-                    y = data_loader.df[target_col].values.astype(np.float32)
+                    y = y_df.values.astype(np.float32)
                     feature_cols_used = "(X列无法排序,使用行号)"
             else:
                 # 未指定 X:用行号(默认行为)
@@ -1087,17 +1175,20 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
             X_for_model = y  # 单变量:X=y
         else:
             # 多变量模式:用其他数值列作为特征(X 列也可以参与)
-            feature_cols = [c for c in numeric_cols if c != target_col]
-            if feature_col and feature_col in numeric_cols and feature_col != target_col:
+            first_target = target_cols_list[0] if isinstance(target_cols_list, list) else target_cols_list
+            feature_cols = [c for c in numeric_cols if c not in target_cols_list]
+            if feature_col and feature_col in numeric_cols and feature_col not in target_cols_list:
                 # 用户指定的 X 也作为特征加入
                 feature_cols = [feature_col] + [c for c in feature_cols if c != feature_col]
             if not feature_cols:
                 # 没有其他特征列,退化为单变量
-                X_for_model = y = data_loader.df[target_col].values.astype(np.float32)
+                y_df = data_loader.df[target_cols_list if isinstance(target_cols_list, list) else [target_cols_list]]
+                X_for_model = y = y_df.values.astype(np.float32)
                 feature_cols_used = "(无,使用自身历史值)"
             else:
                 X_for_model = data_loader.df[feature_cols].values.astype(np.float32)
-                y = data_loader.df[target_col].values.astype(np.float32)
+                y_df = data_loader.df[target_cols_list if isinstance(target_cols_list, list) else [target_cols_list]]
+                y = y_df.values.astype(np.float32)
                 feature_cols_used = str(feature_cols)
 
         prog(0.3, desc=f"训练 {model_name}...")
@@ -1211,7 +1302,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
         mpl.rcParams['text.usetex'] = False  # 禁用 LaTeX,纯 matplotlib 渲染
         # 使用绝对路径确保 Gradio 6.x 能正确服务文件
         base_dir = Path(__file__).parent.resolve()
-        output_dir = base_dir / "outputs" / f"{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
+        output_dir = base_dir / "outputs" / f"{target_col_display or target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
         output_dir.mkdir(parents=True, exist_ok=True)
         # ===== 生成未来预测 ======
         forecast_plot = None
@@ -1264,16 +1355,21 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                     import matplotlib.pyplot as plt
 
                     last_n = min(100, len(y))
-                    hist = y[-last_n:]
+                    hist_full = y[-last_n:]
+                    # 多目标：取第一个目标用于绘图展示
+                    hist_1d = hist_full[:, 0] if hist_full.ndim > 1 else hist_full
+                    future_preds_1d = future_preds[:, 0] if future_preds.ndim > 1 else future_preds
+
                     # 构建真实时间轴(支持日期列和数值列)
-                    d_steps = build_datetime_steps(data_loader.df, feature_col, last_n, len(future_preds))
+                    d_steps = build_datetime_steps(data_loader.df, feature_col, last_n, len(future_preds_1d))
                     steps_hist, steps_fut, xtick_hist, xtick_fut, xlabel, first_date, first_fut = d_steps
-                    std_val = np.std(future_preds) * 0.5
+                    std_val = np.std(future_preds_1d) * 0.5
 
                     prog(0.65, desc="生成图表...")
+                    first_target = target_cols_list[0] if isinstance(target_cols_list, list) and target_cols_list else (target_col if isinstance(target_col, str) else str(target_col))
                     forecast_plot = select_plot_function(
-                        chart_requirement, hist, future_preds,
-                        target_col, steps_hist, steps_fut, xtick_hist, xtick_fut, std_val, xlabel
+                        chart_requirement, hist_1d, future_preds_1d,
+                        first_target, steps_hist, steps_fut, xtick_hist, xtick_fut, std_val, xlabel
                     )
                     # 立即保存为PNG并转换为路径字符串,避免返回matplotlib Figure导致Gradio postprocess错误
                     forecast_plot.savefig(output_dir / "forecast.png", dpi=300, bbox_inches='tight')
@@ -1494,6 +1590,9 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                     ba_csv_path = None
                     hist_png_path = None
                     hist_csv_path = None
+                    th_to_plot = None  # 用于 UI 显示的训练历史
+
+                    # sklearn 模型的 BA 图和训练历史
                     if predictor and predictor.is_fitted and predictor.task_type == "regression":
                         try:
                             split_idx = min(int(len(X_df) * 0.8), len(X_df) - 1)
@@ -1511,32 +1610,49 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
                                 ba_df.to_csv(ba_csv_path, index=False, encoding="utf-8-sig")
                         except Exception as e:
                             print("BA chart error: {}".format(e))
+
+                    # sklearn 训练历史
                     if predictor and predictor.is_fitted and predictor.train_history:
-                            th = predictor.train_history
-                            n = len(th.get("loss", th.get("accuracy", [])))
-                            if n > 0:
-                                try:
-                                    hist_fig = Figure(figsize=(7, 4), dpi=150)
-                                    ax_h = hist_fig.add_subplot(111)
-                                    if "loss" in th:
-                                        ax_h.plot(th["epoch"], th["loss"], color="#E64B35", lw=2, marker="o", markersize=4)
-                                        ax_h.set_ylabel("Loss (RMSE)", fontsize=10)
-                                        ax_h.set_title("Training Loss per Epoch (" + model_name + ")", fontsize=11)
-                                    else:
-                                        ax_h.plot(th["epoch"], th["accuracy"], color="#4DBBD5", lw=2, marker="o", markersize=4)
-                                        ax_h.set_ylabel("Accuracy", fontsize=10)
-                                        ax_h.set_title("Training Accuracy per Epoch (" + model_name + ")", fontsize=11)
-                                    ax_h.set_xlabel("Epoch", fontsize=10)
-                                    ax_h.grid(True, alpha=0.3)
-                                    hist_fig.tight_layout()
-                                    hist_png_path = str(output_dir / "training_history.png")
-                                    hist_fig.savefig(hist_png_path, dpi=150, bbox_inches="tight")
-                                    plt.close(hist_fig)
-                                    pd.DataFrame(th).to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
-                                    hist_csv_path = str(output_dir / "training_history.csv")
-                                except Exception as e:
-                                    print("History chart error: {}".format(e))
-                zip_name = f"ChronoML_{target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}.zip"
+                        th = predictor.train_history
+                        n = len(th.get("loss", th.get("accuracy", [])))
+                        if n > 0:
+                            try:
+                                hist_fig = Figure(figsize=(7, 4), dpi=150)
+                                ax_h = hist_fig.add_subplot(111)
+                                if "loss" in th:
+                                    ax_h.plot(th["epoch"], th["loss"], color="#E64B35", lw=2, marker="o", markersize=4)
+                                    ax_h.set_ylabel("Loss (RMSE)", fontsize=10)
+                                    ax_h.set_title("Training Loss per Epoch (" + model_name + ")", fontsize=11)
+                                else:
+                                    ax_h.plot(th["epoch"], th["accuracy"], color="#4DBBD5", lw=2, marker="o", markersize=4)
+                                    ax_h.set_ylabel("Accuracy", fontsize=10)
+                                    ax_h.set_title("Training Accuracy per Epoch (" + model_name + ")", fontsize=11)
+                                ax_h.set_xlabel("Epoch", fontsize=10)
+                                ax_h.grid(True, alpha=0.3)
+                                hist_fig.tight_layout()
+                                hist_png_path = str(output_dir / "training_history.png")
+                                hist_fig.savefig(hist_png_path, dpi=150, bbox_inches="tight")
+                                plt.close(hist_fig)
+                                pd.DataFrame(th).to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
+                                hist_csv_path = str(output_dir / "training_history.csv")
+                                th_to_plot = th
+                            except Exception as e:
+                                print("History chart error: {}".format(e))
+
+                    # LSTM / CNN1D / PatchTST 训练历史（统一格式）
+                    if lstm_pred and lstm_pred.is_fitted and hasattr(lstm_pred, 'train_history'):
+                        th = lstm_pred.train_history
+                        if th and th.get('epoch'):
+                            try:
+                                th_png = plot_training_history(th, target_col_display or target_col, output_dir)
+                                if th_png and Path(th_png).is_file():
+                                    hist_png_path = th_png
+                                pd.DataFrame(th).to_csv(str(output_dir / "training_history.csv"), index=False, encoding="utf-8-sig")
+                                hist_csv_path = str(output_dir / "training_history.csv")
+                                th_to_plot = th
+                            except Exception as e:
+                                print("LSTM/CNN1D history error: {}".format(e))
+                zip_name = f"ChronoML_{target_col_display or target_col}_{model_name}_{pd.Timestamp.now():%Y%m%d_%H%M%S}.zip"
                 zip_path = str(output_dir / zip_name)
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                     zf.write(output_dir / "forecast.png", arcname="forecast.png")
@@ -1555,7 +1671,27 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
             except Exception as e:
                 zip_path = ""
 
-        return msg, config, importance, forecast_plot, forecast_text, summary_text, zip_path
+        # 生成训练历史曲线图（用于 UI 显示）
+        training_hist_plot = None
+        th_for_plot = None
+        if lstm_pred and lstm_pred.is_fitted and hasattr(lstm_pred, 'train_history'):
+            th_for_plot = lstm_pred.train_history
+        elif predictor and predictor.is_fitted and hasattr(predictor, 'train_history'):
+            th_for_plot = predictor.train_history
+
+        if th_for_plot and th_for_plot.get('epoch'):
+            try:
+                th_png_path = plot_training_history(
+                    th_for_plot,
+                    target_col_display or target_col or 'Target',
+                    output_dir
+                )
+                if th_png_path and Path(th_png_path).is_file():
+                    training_hist_plot = th_png_path
+            except Exception as e:
+                print("Training history plot error: {}".format(e))
+
+        return msg, config, importance, forecast_plot, forecast_text, summary_text, zip_path, training_hist_plot
 
     def on_download(dummy, prog=gr.Progress()):
         """手动触发下载最新结果包"""
@@ -1627,7 +1763,7 @@ with gr.Blocks(title="ChronoML v1.04 - 时序预测工具") as demo:
     train_btn.click(
         on_train,
         inputs=[feature_col, target_col, predict_mode, model_select, requirement, n_future_val, n_future_unit, chart_requirement],
-        outputs=[result_out, config_out, importance_out, forecast_plot, forecast_out, summary_out, download_file]
+        outputs=[result_out, config_out, importance_out, forecast_plot, forecast_out, summary_out, download_file, training_history_plot]
     )
     download_btn.click(
         on_download,

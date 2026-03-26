@@ -51,14 +51,21 @@ class Predictor:
             # ===== LSTM 特殊处理 =====
             if model_name == 'LSTM':
                 from models.lstm_model import LSTMPredictor
-                
+
                 self._is_lstm = True
                 params = model_params or {}
-                
+
                 X_array = X.values.astype(np.float32)
-                y_array = y.values.astype(np.float32)
-                target_col = y.name or 'target'
-                
+                # 支持多目标列：y 可以是 pd.DataFrame 或 pd.Series
+                if isinstance(y, pd.DataFrame):
+                    y_array = y.values.astype(np.float32)
+                    target_cols = list(y.columns)
+                    target_col = target_cols[0] if len(target_cols) <= 3 else ','.join(target_cols[:3]) + '...'
+                else:
+                    y_array = y.values.astype(np.float32)
+                    target_cols = [y.name or 'target']
+                    target_col = target_cols[0]
+
                 self.lstm_predictor = LSTMPredictor()
                 success, msg = self.lstm_predictor.train(
                     X=X_array,
@@ -72,7 +79,7 @@ class Predictor:
                     test_size=test_size,
                     target_col=target_col
                 )
-                
+
                 self.metrics = self.lstm_predictor.metrics
                 self.is_fitted = True
                 self.feature_names = list(X.columns)

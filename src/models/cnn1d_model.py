@@ -265,6 +265,12 @@ class CNN1DPredictorV4:
         self.train_losses: list = []   # 每个 epoch 的训练 loss
         self.val_losses: list = []     # 每个 epoch 的验证 loss
         self._fig: Optional[Any] = None  # 损失曲线 figure
+        # 训练历史：完整指标
+        self.train_history: Dict[str, list] = {
+            'epoch': [], 'train_loss': [], 'val_loss': [],
+            'train_mae': [], 'val_mae': [],
+            'train_r2': [], 'val_r2': []
+        }
 
     def train(
         self,
@@ -418,11 +424,27 @@ class CNN1DPredictorV4:
                 avg_train_loss = epoch_loss / max(n_batches, 1)
                 scheduler.step()
 
-                # 计算验证 loss
+                # 计算验证指标（含反归一化）
                 self.model.eval()
                 with torch.no_grad():
-                    val_pred = self.model(X_test.to(self.device))
-                    val_loss = criterion(val_pred, y_test.to(self.device)).item()
+                    val_pred_norm = self.model(X_test.to(self.device)).cpu().numpy()
+                    val_loss = criterion(val_pred_norm, y_test.numpy()).item()
+                    # 反归一化
+                    val_pred = val_pred_norm * self._target_std + self._target_mean
+                    y_test_actual = y_test.numpy() * self._target_std + self._target_mean
+                    val_mae = float(np.mean(np.abs(val_pred - y_test_actual)))
+                    ss_res = np.sum((y_test_actual - val_pred) ** 2)
+                    ss_tot = np.sum((y_test_actual - np.mean(y_test_actual)) ** 2)
+                    val_r2 = float(1 - ss_res / (ss_tot + 1e-8))
+
+                    # 训练集指标
+                    train_pred_norm = self.model(X_train.to(self.device)).cpu().numpy()
+                    train_pred = train_pred_norm * self._target_std + self._target_mean
+                    y_train_actual = y_train.numpy() * self._target_std + self._target_mean
+                    train_mae = float(np.mean(np.abs(train_pred - y_train_actual)))
+                    ss_res_tr = np.sum((y_train_actual - train_pred) ** 2)
+                    ss_tot_tr = np.sum((y_train_actual - np.mean(y_train_actual)) ** 2)
+                    train_r2 = float(1 - ss_res_tr / (ss_tot_tr + 1e-8))
                 self.model.train()
 
                 # Early stopping
@@ -430,7 +452,7 @@ class CNN1DPredictorV4:
                     self._best_val_loss = float('inf')
                     self._patience_counter = 0
                     self._best_state = None
-                
+
                 if val_loss < self._best_val_loss:
                     self._best_val_loss = val_loss
                     self._patience_counter = 0
@@ -443,6 +465,15 @@ class CNN1DPredictorV4:
 
                 self.train_losses.append(avg_train_loss)
                 self.val_losses.append(val_loss)
+
+                # 记录完整训练历史
+                self.train_history['epoch'].append(epoch + 1)
+                self.train_history['train_loss'].append(avg_train_loss)
+                self.train_history['val_loss'].append(val_loss)
+                self.train_history['train_mae'].append(train_mae)
+                self.train_history['val_mae'].append(val_mae)
+                self.train_history['train_r2'].append(train_r2)
+                self.train_history['val_r2'].append(val_r2)
 
                 # 实时更新损失曲线
                 if self._fig is not None:
@@ -752,6 +783,7 @@ class CNN1DPredictorV4:
             'pred_len': self.pred_len,
             'n_features': self.n_features,
             'metrics': self.metrics,
+            'train_history': self.train_history,
         }
         torch.save(save_data, path)
         logger.info(f"CNN1D-V4 模型已保存: {path}")
@@ -766,6 +798,10 @@ class CNN1DPredictorV4:
         self.n_features = data['n_features']
         self.metrics = data.get('metrics', {})
         self._bias_offset = self.metrics.get('bias_offset', 0.0)
+        self.train_history = data.get('train_history', {
+            'epoch': [], 'train_loss': [], 'val_loss': [],
+            'train_mae': [], 'val_mae': [], 'train_r2': [], 'val_r2': []
+        })
 
         hidden_channels = int(self.metrics.get('hidden_channels', 128))
         num_layers = int(self.metrics.get('num_layers', 3))

@@ -185,7 +185,7 @@ class DataLoader:
     def _analyze(self):
         """分析数据结构"""
         self.numeric_cols = list(self.df.select_dtypes(include=[np.number]).columns)
-        self.categorical_cols = list(self.df.select_dtypes(include=['object']).columns)
+        self.categorical_cols = list(self.df.select_dtypes(include=['object', 'string']).columns)
 
         # 分析数据结构
         self.data_structure = self._detect_structure()
@@ -1941,10 +1941,11 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
 
         with gr.Row():
             with gr.Column(scale=1):
-                wiz_target_col = gr.Textbox(
+                wiz_target_col = gr.Dropdown(
                     label="① 目标列（预测什么）？",
-                    placeholder="输入列名，如 Sales",
-                    lines=1,
+                    choices=[],
+                    allow_custom_value=True,
+                    info="上传并解析数据后自动填充"
                 )
                 wiz_pred_len = gr.Radio(
                     label="② 预测多久以后？",
@@ -2336,6 +2337,9 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 return "*❌ 数据无效，请重新上传*", None, None, None, gr.update()
 
             target_col = wiz_target_col
+            # 验证目标列不能为空
+            if not target_col or not isinstance(target_col, str) or target_col.strip() == "":
+                return "*❌ 请选择目标列（预测什么）*", None, None, None, gr.update()
             seq_len = int(wiz_seq_len)
             pred_len = int(wiz_pred_len)
             epochs = int(wiz_epochs)

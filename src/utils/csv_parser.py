@@ -86,11 +86,28 @@ class CSVParser:
 
     def _read_raw_lines(self, path: str, n: int = 5) -> List[List[str]]:
         """读取 CSV 原始行（不解析），用于自动检测"""
+        # 自动检测编码
+        encodings = ['utf-8', 'gbk', 'gb2312', 'latin1', 'cp1252']
+        raw_bytes = None
+        detected_enc = 'utf-8'
+        try:
+            with open(path, 'rb') as f:
+                raw_bytes = f.read(10000)
+            for enc in encodings:
+                try:
+                    raw_bytes.decode(enc)
+                    detected_enc = enc
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+        except Exception:
+            pass
+
         try:
             # 先尝试不同分隔符读取第一行
             for sep in [',', ';', '\t', '|']:
                 try:
-                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                    with open(path, 'r', encoding=detected_enc, errors='replace') as f:
                         lines = [f.readline() for _ in range(n + 1)]
                     first_line = lines[0]
                     if sep in first_line:
@@ -103,7 +120,7 @@ class CSVParser:
                     continue
 
             # 最后用默认逗号
-            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(path, 'r', encoding=detected_enc, errors='replace') as f:
                 lines = [f.readline() for _ in range(n + 1)]
             rows = []
             for line in lines:
@@ -126,8 +143,24 @@ class CSVParser:
 
     def _detect_separator(self, path: str) -> str:
         """自动检测分隔符"""
+        # 自动检测编码
+        encodings = ['utf-8', 'gbk', 'gb2312', 'latin1', 'cp1252']
+        detected_enc = 'utf-8'
         try:
-            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(path, 'rb') as f:
+                raw = f.read(200)
+            for enc in encodings:
+                try:
+                    raw.decode(enc)
+                    detected_enc = enc
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+        except Exception:
+            pass
+
+        try:
+            with open(path, 'r', encoding=detected_enc, errors='replace') as f:
                 first_line = f.readline()
 
             separators = {',': 0, ';': 0, '\t': 0, '|': 0, ' ': 0}
@@ -244,7 +277,7 @@ class CSVParser:
             raise FileNotFoundError(f"文件不存在: {file_path}")
 
         # 读取原始行
-        rows = self._read_raw_lines(str(path), n=20)
+        rows = self._read_raw_lines(str(path), n=50)
         if not rows:
             raise ValueError("无法读取文件内容")
 
@@ -257,11 +290,27 @@ class CSVParser:
         header_display = "有表头（第一行）" if has_header else "无表头"
 
         # 预览行（用于 UI）
-        preview_rows = rows[1:6] if has_header else rows[:5]
+        preview_rows = rows[1:51] if has_header else rows[:50]
 
         # 检测日期列
         detected_date_col = self._detect_date_col(rows, has_header)
         detected_date_format = self._detect_date_format(rows, detected_date_col) if detected_date_col else 'auto'
+
+        # 自动检测编码
+        encodings = ['utf-8', 'gbk', 'gb2312', 'latin1', 'cp1252']
+        detected_enc = 'utf-8'
+        try:
+            with open(path, 'rb') as f:
+                raw = f.read(10000)
+            for enc in encodings:
+                try:
+                    raw.decode(enc)
+                    detected_enc = enc
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+        except Exception:
+            pass
 
         # 尝解析看整体信息（只读一次前100行，避免重复I/O）
         try:
@@ -269,8 +318,8 @@ class CSVParser:
                 str(path),
                 sep=sep,
                 header=0 if has_header else None,
-                encoding='utf-8',
-                encoding_errors='ignore',
+                encoding=detected_enc,
+                encoding_errors='replace',
                 nrows=100,
             )
             # 用文件大小估算行数（避免读整个文件），CSV平均每行约200字节
@@ -328,6 +377,25 @@ class CSVParser:
 
         sep = config.separator if config.separator != 'auto' else ','
 
+        # 自动检测编码（当配置为默认utf-8时尝试检测）
+        enc = config.encoding
+        if enc == 'utf-8':
+            encodings = ['utf-8', 'gbk', 'gb2312', 'latin1', 'cp1252']
+            detected = 'utf-8'
+            try:
+                with open(path, 'rb') as f:
+                    raw = f.read(10000)
+                for e in encodings:
+                    try:
+                        raw.decode(e)
+                        detected = e
+                        break
+                    except (UnicodeDecodeError, LookupError):
+                        continue
+                enc = detected
+            except Exception:
+                pass
+
         # 读取 CSV
         try:
             if not config.has_header and config.custom_column_names:
@@ -336,16 +404,16 @@ class CSVParser:
                     sep=sep,
                     header=None,
                     names=config.custom_column_names,
-                    encoding=config.encoding,
-                    encoding_errors='ignore',
+                    encoding=enc,
+                    encoding_errors='replace',
                 )
             elif not config.has_header:
                 df = pd.read_csv(
                     str(path),
                     sep=sep,
                     header=None,
-                    encoding=config.encoding,
-                    encoding_errors='ignore',
+                    encoding=enc,
+                    encoding_errors='replace',
                 )
                 df.columns = [f"col_{i}" for i in range(len(df.columns))]
             else:
@@ -353,8 +421,8 @@ class CSVParser:
                     str(path),
                     sep=sep,
                     header=0,
-                    encoding=config.encoding,
-                    encoding_errors='ignore',
+                    encoding=enc,
+                    encoding_errors='replace',
                 )
         except Exception as e:
             raise ValueError(f"CSV 解析失败: {e}")

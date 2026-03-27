@@ -263,7 +263,7 @@ class CSVParser:
         detected_date_col = self._detect_date_col(rows, has_header)
         detected_date_format = self._detect_date_format(rows, detected_date_col) if detected_date_col else 'auto'
 
-        # 尝解析看整体信息
+        # 尝解析看整体信息（只读一次前100行，避免重复I/O）
         try:
             test_df = pd.read_csv(
                 str(path),
@@ -271,9 +271,11 @@ class CSVParser:
                 header=0 if has_header else None,
                 encoding='utf-8',
                 encoding_errors='ignore',
-                nrows=50,
+                nrows=100,
             )
-            n_rows_estimate = sum(1 for _ in open(str(path), encoding='utf-8', errors='ignore'))
+            # 用文件大小估算行数（避免读整个文件），CSV平均每行约200字节
+            file_size_bytes = path.stat().st_size
+            n_rows_estimate = max(1, int(file_size_bytes / 200))
             n_cols = len(test_df.columns)
             col_names = list(test_df.columns)
             numeric_cols = [c for c in col_names if pd.api.types.is_numeric_dtype(test_df[c])]
@@ -291,7 +293,7 @@ class CSVParser:
             separator=sep,
             date_col=detected_date_col,
             date_format=detected_date_format,
-            missing_strategy=self._detect_missing_strategy(pd.read_csv(str(path), sep=sep, encoding='utf-8', encoding_errors='ignore', nrows=100) if sep else pd.DataFrame()),
+            missing_strategy=self._detect_missing_strategy(test_df),
         )
 
         diagnostics = {

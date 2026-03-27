@@ -61,10 +61,18 @@ def extract_file_path(file_obj):
         path = str(file_obj.path)
         if Path(path).is_file():
             return path
-        # 如果 path 是目录(Gradio 缓存目录),尝试获取 orig_name
+        # 如果 path 不是有效文件（可能是 URL 或 Gradio 缓存目录），
+        # 尝试用 orig_name 构造真实路径
         if hasattr(file_obj, 'orig_name') and file_obj.orig_name:
-            # 缓存目录下的实际文件
-            return str(Path(path).parent / file_obj.orig_name)
+            # 先尝试将 orig_name 作为 path 的同目录下的文件
+            real_path = str(Path(path) / file_obj.orig_name)
+            if Path(real_path).is_file():
+                return real_path
+            # 如果 path 本身是文件但 is_file 误判（如挂载路径），
+            # 则用 path 的父目录 + orig_name
+            real_path2 = str(Path(path).parent / file_obj.orig_name)
+            if Path(real_path2).is_file():
+                return real_path2
         return None
     # 已经是字符串:检查是否是有效文件
     if isinstance(file_obj, str):

@@ -34,53 +34,97 @@ if not logger.handlers:
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 
+# ============ 全局状态存储（避免 gr.State DataFrame 序列化问题）============
+# gr.State 在 Gradio 6.x 中无法正确序列化 pandas DataFrame，
+# 因此 DataFrame 等大对象存于此模块级变量，state 只存简单值。
+_wizard_data = {
+    'df_parsed': None,
+    'file_path': None,
+    'analysis': None,
+    'recommendation': None,
+    'final_config': None,
+    'step': 0,
+}
+
+
 # ============ 工具函数 ============
 def extract_file_path(file_obj):
     """从 Gradio 6.x File 组件返回值中提取文件路径字符串。
 
-    Gradio 6.x 返回 ListFiles/FileData/dict/str 等多种格式,此函数统一处理。
+    Gradio 6.x 返回 ListFiles/FileData/dict/str 等多种格式，此函数统一处理。
+    返回值永远是一个有效的文件路径字符串，如果不是文件则返回 None。
     """
     if file_obj is None:
         return None
-    # ListFiles (Gradio 6.x Pydantic root model,行为像 list 但不是 list 的子类)
-    if isinstance(file_obj, ListFiles):
-        file_obj = file_obj.root  # 取出内部的 list[FileData]
-    # 普通列表:取第一个元素(跳过空列表)
+
+    # ListFiles (Gradio 6.x Pydantic root model)
+    if hasattr(file_obj, 'root'):
+        file_obj = file_obj.root
+
+    # 普通列表：取第一个有效元素
     if isinstance(file_obj, list):
-        if len(file_obj) == 0:
-            return None
-        file_obj = file_obj[0]
-    # dict(序列化后的 FileData)
-    if isinstance(file_obj, dict):
-        path = file_obj.get('path', '')
-        if path and Path(path).is_file():
-            return str(path)
+        for item in file_obj:
+            result = extract_file_path(item)
+            if result:
+                return result
         return None
+
+    # dict（序列化后的 FileData）
+    if isinstance(file_obj, dict):
+        path = str(file_obj.get('path', ''))
+        if path:
+            p = Path(path)
+            if p.is_file():
+                return str(p)
+            # path 可能是目录，尝试用 orig_name
+            orig_name = file_obj.get('orig_name', '')
+            if orig_name:
+                real = p / orig_name
+                if real.is_file():
+                    return str(real)
+                real2 = p.parent / orig_name
+                if real2.is_file():
+                    return str(real2)
+        return None
+
     # FileData Pydantic 对象
     if hasattr(file_obj, 'path'):
         path = str(file_obj.path)
-        if Path(path).is_file():
+        p = Path(path)
+        if p.is_file():
             return path
-        # 如果 path 不是有效文件（可能是 URL 或 Gradio 缓存目录），
-        # 尝试用 orig_name 构造真实路径
-        if hasattr(file_obj, 'orig_name') and file_obj.orig_name:
-            # 先尝试将 orig_name 作为 path 的同目录下的文件
-            real_path = str(Path(path) / file_obj.orig_name)
-            if Path(real_path).is_file():
-                return real_path
-            # 如果 path 本身是文件但 is_file 误判（如挂载路径），
-            # 则用 path 的父目录 + orig_name
-            real_path2 = str(Path(path).parent / file_obj.orig_name)
-            if Path(real_path2).is_file():
-                return real_path2
+        # path 可能是 Gradio 缓存目录，尝试用 orig_name
+        orig_name = getattr(file_obj, 'orig_name', None)
+        if orig_name:
+            real = p / orig_name
+            if real.is_file():
+                return str(real)
+            real2 = p.parent / orig_name
+            if real2.is_file():
+                return str(real2)
         return None
-    # 已经是字符串:检查是否是有效文件
+
+    # 已经是字符串
     if isinstance(file_obj, str):
         p = Path(file_obj)
         if p.is_file():
             return str(p)
         return None
+
     return None
+
+
+def _preview_md(df):
+    """将 pandas DataFrame 转换为 Markdown 表格字符串，供 gr.Markdown 组件使用。"""
+    if df is None or df.empty:
+        return "*（无预览数据）*"
+    cols = df.columns.tolist()
+    header = "| " + " | ".join(str(c) for c in cols) + " |"
+    sep = "| " + " | ".join("---" for _ in cols) + " |"
+    rows = []
+    for _, row in df.iterrows():
+        rows.append("| " + " | ".join(str(v) for v in row) + " |")
+    return header + "\n" + sep + "\n" + "\n".join(rows)
 
 
 # ============ 核心模块 ============
@@ -964,7 +1008,11 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 gr.update(choices=["自动推荐", "PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting", "RandomForest"], value="自动推荐")
             ]
 
-        file_path = extract_file_path(file)
+        # Gradio 6.x + gradio_client 场景: string path 直接传入，不走 FileData 解析
+        if isinstance(file, str):
+            file_path = file if Path(file).is_file() else None
+        else:
+            file_path = extract_file_path(file)
         if not file_path:
             return [None] * 7 + [
                 "**文件路径无效**",
@@ -1124,10 +1172,10 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
         global predictor, lstm_pred
 
         if data_loader.df is None:
-            return ["❌ 请先上传数据", "", "", None, "", "", "", None]
+            return ["❌ 请先上传数据", "", "", None, "", "", None, None]
 
         if not target_col:
-            return ["❌ 请选择目标列 Y", "", "", None, "", "", "", None]
+            return ["❌ 请选择目标列 Y", "", "", None, "", "", None, None]
 
         # 处理 target_col 多选情况
         if isinstance(target_col, list):
@@ -1169,9 +1217,9 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
         if isinstance(target_cols_list, list) and len(target_cols_list) > 1:
             invalid = [c for c in target_cols_list if c not in numeric_cols]
             if invalid:
-                return [f"❌ 以下目标列不是数值列: {invalid}", "", "", None, "", "", "", None]
+                return [f"❌ 以下目标列不是数值列: {invalid}", "", "", None, "", "", None, None]
         elif target_cols_list and target_cols_list[0] not in numeric_cols:
-            return [f"❌ 目标列 [{target_cols_list[0]}] 不是数值列", "", "", None, "", "", "", None]
+            return [f"❌ 目标列 [{target_cols_list[0]}] 不是数值列", "", "", None, "", "", None, None]
 
         # 根据预测模式决定数据准备方式
         data_type = data_loader.data_structure['type'] if data_loader.data_structure else 'unknown'
@@ -1893,10 +1941,10 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
 
         with gr.Row():
             with gr.Column(scale=1):
-                wiz_target_col = gr.Dropdown(
+                wiz_target_col = gr.Textbox(
                     label="① 目标列（预测什么）？",
-                    choices=[],
-
+                    placeholder="输入列名，如 Sales",
+                    lines=1,
                 )
                 wiz_pred_len = gr.Radio(
                     label="② 预测多久以后？",
@@ -1932,9 +1980,9 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 wiz_model_slider_md = gr.Markdown("*可调参数...*")
 
                 # 可调参数（根据推荐动态显示）
-                wiz_seq_len = gr.Slider(label="seq_len（输入窗口）", minimum=12, maximum=256, value=48, step=4)
-                wiz_pred_len_slider = gr.Slider(label="pred_len（预测步数）", minimum=3, maximum=96, value=24, step=1)
-                wiz_epochs = gr.Slider(label="epochs（训练轮数）", minimum=5, maximum=100, value=30, step=5)
+                wiz_seq_len = gr.Slider(label="seq_len（输入窗口）", minimum=12, maximum=512, value=48, step=4)
+                wiz_pred_len_slider = gr.Slider(label="pred_len（预测步数）", minimum=3, maximum=512, value=24, step=1)
+                wiz_epochs = gr.Slider(label="epochs（训练轮数）", minimum=5, maximum=500, value=30, step=5)
                 wiz_lr = gr.Slider(label="learning_rate（学习率）", minimum=0.0001, maximum=0.01, value=0.001, step=0.0005)
                 wiz_model_select = gr.Dropdown(
                     label="模型",
@@ -1968,7 +2016,11 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
             return {**state, "step": 0, "file_path": None, "diagnostics": None}, \
                 "*请上传 CSV 文件*", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
-        file_path = extract_file_path(file)
+        # Gradio 6.x + gradio_client 场景: string path 直接传入，不走 FileData 解析
+        if isinstance(file, str):
+            file_path = file if Path(file).is_file() else None
+        else:
+            file_path = extract_file_path(file)
         if not file_path:
             return {**state, "step": 0}, "*❌ 文件路径无效*", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
@@ -2000,7 +2052,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
 
             # 预览表格
             preview_rows = diagnostics.get('preview_rows', [])
-            preview_df = pd.DataFrame(preview_rows[:10], columns=preview_rows[0] if preview_rows else None) if preview_rows else None
+            preview_df = pd.DataFrame(preview_rows[:50], columns=preview_rows[0] if preview_rows else None) if preview_rows else None
 
             diag_md = f"""**文件**: `{diagnostics['file_name']}`  
 **大小**: {diagnostics['file_size_mb']} MB  
@@ -2017,6 +2069,8 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 "diagnostics": diagnostics,
                 "parse_config": config.to_dict(),
             }
+            _wizard_data['file_path'] = file_path
+            _wizard_data['step'] = 1
 
             return new_state, diag_md, \
                 gr.update(choices=header_choices, value=header_default), \
@@ -2024,7 +2078,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 gr.update(), \
                 gr.update(choices=sep_choices), \
                 gr.update(), \
-                preview_df if preview_df is not None else gr.update(visible=False)
+                _preview_md(preview_df) if preview_df is not None else gr.update(visible=False)
 
         except Exception as e:
             import traceback; traceback.print_exc()
@@ -2034,11 +2088,12 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
     def wiz_on_confirm_parse(wiz_has_header, wiz_date_col, wiz_date_format,
                               wiz_separator, wiz_missing_strategy,
                               state):
-        file_path = state.get("file_path")
+        # gr.State 序列化可能丢失数据，优先从模块级变量读取
+        file_path = (state.get("file_path") if state else None) or _wizard_data.get('file_path')
         """Step 1→2: 确认解析配置 → 解析 + 分析"""
         if not file_path:
             return "*❌ 请先上传文件*", gr.update(interactive=False), \
-                gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+                gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         try:
             import sys
@@ -2099,7 +2154,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
             analysis = analyzer.analyze(df, date_col=date_col)
 
             # 更新目标列下拉
-            numeric_choices = list(analysis.column_stats.keys())
+            numeric_choices = list((analysis.column_stats or {}).keys())
             default_target = analysis.suggested_target or (numeric_choices[0] if numeric_choices else None)
 
             overview_md = f"""**✅ 解析成功**
@@ -2125,10 +2180,12 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
             new_state = {
                 **state,
                 "step": 2,
-                "df_parsed": df,
-                "analysis": analysis.to_dict(),
                 "parse_config": cfg.to_dict(),
             }
+            # DataFrame 不走 gr.State 序列化，直接存模块级变量
+            _wizard_data['df_parsed'] = df
+            _wizard_data['analysis'] = analysis.to_dict()
+            _wizard_data['step'] = 2
 
             return overview_md, gr.update(interactive=True), \
                 gr.update(choices=numeric_choices, value=default_target), \
@@ -2148,7 +2205,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                                         wiz_seq_len, state):
         """Step 2→3: 用户配置 → 生成推荐"""
         if not wiz_target_col:
-            return "*❌ 请选择目标列*", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return "*❌ 请选择目标列*", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         try:
             import sys
@@ -2156,8 +2213,8 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
             from src.utils.data_analyzer import DataAnalyzer, AnalysisResult
             from src.utils.recommendation_engine import RecommendationEngine
 
-            # 重建 analysis 对象
-            analysis_dict = state.get('analysis', {})
+            # 重建 analysis 对象（从模块级变量读取，避免 gr.State 序列化丢失）
+            analysis_dict = _wizard_data.get('analysis', {})
             analysis = AnalysisResult()
             for k, v in analysis_dict.items():
                 setattr(analysis, k, v)
@@ -2245,9 +2302,11 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 }
             }
 
+            max_seq = max(12, (analysis.n_samples or 36) // 2)
+            # 不在这里设 maximum，只更新 value，组件自身 maximum 足够大（512）
             return reason_md, \
-                gr.update(value=recommendation.seq_len, minimum=12, maximum=min(256, analysis.n_samples // 2)), \
-                gr.update(value=recommendation.pred_len, maximum=min(recommendation.seq_len, analysis.n_samples // 3)), \
+                gr.update(value=recommendation.seq_len, minimum=12), \
+                gr.update(value=recommendation.pred_len, minimum=3), \
                 gr.update(value=recommendation.epochs), \
                 gr.update(value=recommendation.learning_rate), \
                 gr.update(choices=[recommendation.model] + [m for m in ["PatchTST", "LSTM", "EnhancedCNN1D", "GradientBoosting"] if m != recommendation.model], value=recommendation.model), \
@@ -2263,6 +2322,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
         """Step 3→4: 开始训练"""
         try:
             import sys
+            from pathlib import Path
             sys.path.insert(0, str(Path(__file__).parent / "src"))
             from src.utils.feature_engine import FeatureEngine, FeatureConfig
             import matplotlib
@@ -2270,9 +2330,8 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
             import matplotlib.pyplot as plt
             import zipfile
             import json
-            from pathlib import Path
 
-            df = state.get('df_parsed')
+            df = _wizard_data.get('df_parsed')
             if df is None:
                 return "*❌ 数据无效，请重新上传*", None, None, None, gr.update()
 
@@ -2284,7 +2343,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
             model_name = wiz_model
 
             # 准备数据
-            analysis_dict = state.get('analysis', {})
+            analysis_dict = _wizard_data.get('analysis', {}) or {}
             seasonality = analysis_dict.get('detected_seasonality')
             time_unit = analysis_dict.get('time_step_unit')
             date_col = analysis_dict.get('date_col')
@@ -2310,7 +2369,8 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
             y = y[n_drop:]
 
             # 获取最终配置中的其他参数
-            rec = state.get('recommendation', {})
+            rec = (_wizard_data.get('recommendation') or
+                   (state.get('recommendation', {}) if state else {}))
             hidden_size = rec.get('hidden_size', 64)
             num_layers = rec.get('num_layers', 2)
             dropout = rec.get('dropout', 0.2)
@@ -2336,7 +2396,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 ok, msg = lstm_pred.train(X, y, seq_len=min(seq_len, max(5, len(X)//5)),
                                           hidden_size=hidden_size, num_layers=num_layers,
                                           epochs=min(epochs, 50), batch_size=batch_size,
-                                          learning_rate=lr, dropout=dropout,
+                                          learning_rate=lr,
                                           target_col=target_col)
                 if ok:
                     future_preds = lstm_pred.predict_future(X, steps=min(pred_len, 30))
@@ -2346,13 +2406,15 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
             elif model_name == "PatchTST":
                 from src.models.patchtst_model import PatchTSTPredictor
                 lstm_pred = PatchTSTPredictor()
-                auto_seq = min(seq_len, max(5, len(X)//5))
-                auto_pred = min(pred_len, max(1, auto_seq//2))
-                ok, msg = lstm_pred.train(X, y, seq_len=auto_seq, pred_len=auto_pred,
+                # 安全参数：确保 seq_len + pred_len <= len(X) * 0.7
+                max_total = max(5, int(len(X) * 0.7))
+                safe_seq = min(seq_len, max(4, max_total // 2))
+                safe_pred = min(pred_len, max(1, max_total - safe_seq))
+                ok, msg = lstm_pred.train(X, y, seq_len=safe_seq, pred_len=safe_pred,
                                           d_model=d_model, n_heads=n_heads, n_layers=n_layers_trans,
-                                          d_ff=d_ff, patch_size=patch_size,
+                                          d_ff=d_ff, patch_size=max(4, patch_size),
                                           epochs=min(epochs, 30), batch_size=batch_size,
-                                          learning_rate=lr, dropout=dropout,
+                                          learning_rate=lr,
                                           target_col=target_col)
                 if ok:
                     future_preds = lstm_pred.predict_future(X, steps=min(pred_len, 30))
@@ -2362,7 +2424,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
             elif model_name == "EnhancedCNN1D":
                 from src.models.cnn1d_complex import EnhancedCNN1DPredictor
                 lstm_pred = EnhancedCNN1DPredictor()
-                auto_seq = min(seq_len, max(5, len(X)//5))
+                auto_seq = min(seq_len, max(4, len(X)//4))
                 auto_pred = min(pred_len, max(1, auto_seq//2))
                 ok, msg = lstm_pred.train(X, y, seq_len=auto_seq, pred_len=auto_pred,
                                           hidden_channels=hidden_channels,
@@ -2423,6 +2485,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
 
             # 绘图
             plot_path = None
+            fig = None
             if future_preds is not None and len(future_preds) > 0:
                 last_n = min(100, len(y))
                 hist_vals = y[-last_n:]
@@ -2444,7 +2507,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 output_dir.mkdir(parents=True, exist_ok=True)
                 plot_path = str(output_dir / f"wizard_{target_col}_{model_name}.png")
                 fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-                plt.close(fig)
+                # 不 plt.close(fig)，让 Plot 组件 postprocess 能读取 fig
 
             # 预测值文本
             fc_lines = [f"**未来 {len(future_preds) if future_preds is not None else 0} 步预测值 ({target_col}):**"]
@@ -2513,7 +2576,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                     logger.warning(f"ZIP 打包失败: {e}")
 
             return msg_out, \
-                plot_path if plot_path else None, \
+                gr.Plot(fig) if fig is not None else None, \
                 fc_text, \
                 summary, \
                 zip_path if zip_path else "",

@@ -2522,29 +2522,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
 
             fc_text = "\n".join(fc_lines)
 
-            # 趋势总结（追加下载路径信息）
-            if future_preds is not None and len(future_preds) > 1:
-                first_v = float(future_preds[0])
-                last_v = float(future_preds[-1])
-                change = last_v - first_v
-                pct = change / abs(first_v) * 100 if first_v != 0 else 0
-                if change > 0:
-                    trend = "📈 **上升趋势**"
-                elif change < 0:
-                    trend = "📉 **下降趋势**"
-                else:
-                    trend = "➡️ **基本平稳**"
-                summary = f"{trend}，从 {first_v:.4f} 到 {last_v:.4f}（{'+' if pct >= 0 else ''}{pct:.1f}%）"
-                
-                # 追加下载路径信息
-                if download_zip_path:
-                    summary += f"\n\n✅ **结果包已保存到下载文件夹：**\n`{download_zip_path}`"
-            else:
-                summary = "*趋势分析完成*"
-                if download_zip_path:
-                    summary += f"\n\n✅ **结果包已保存到：** `{download_zip_path}`"
-
-            # 打包 ZIP
+            # 打包 ZIP（提前初始化变量）
             zip_path = None
             download_zip_path = None
             if plot_path and future_preds is not None:
@@ -2592,6 +2570,28 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                     
                 except Exception as e:
                     logger.warning(f"ZIP 打包失败: {e}")
+
+            # 趋势总结（追加下载路径信息）
+            if future_preds is not None and len(future_preds) > 1:
+                first_v = float(future_preds[0])
+                last_v = float(future_preds[-1])
+                change = last_v - first_v
+                pct = change / abs(first_v) * 100 if first_v != 0 else 0
+                if change > 0:
+                    trend = "📈 **上升趋势**"
+                elif change < 0:
+                    trend = "📉 **下降趋势**"
+                else:
+                    trend = "➡️ **基本平稳**"
+                summary = f"{trend}，从 {first_v:.4f} 到 {last_v:.4f}（{'+' if pct >= 0 else ''}{pct:.1f}%）"
+                
+                # 追加下载路径信息
+                if download_zip_path:
+                    summary += f"\n\n✅ **结果包已保存到下载文件夹：**\n`{download_zip_path}`"
+            else:
+                summary = "*趋势分析完成*"
+                if download_zip_path:
+                    summary += f"\n\n✅ **结果包已保存到：** `{download_zip_path}`"
 
             return msg_out, \
                 plot_path if plot_path else None, \

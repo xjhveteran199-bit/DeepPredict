@@ -2489,7 +2489,6 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
 
             # 绘图
             plot_path = None
-            fig = None
             if future_preds is not None and len(future_preds) > 0:
                 last_n = min(100, len(y))
                 hist_vals = y[-last_n:]
@@ -2511,7 +2510,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 output_dir.mkdir(parents=True, exist_ok=True)
                 plot_path = str(output_dir / f"wizard_{target_col}_{model_name}.png")
                 fig.savefig(plot_path, dpi=300, bbox_inches='tight')
-                # 不 plt.close(fig)，让 Plot 组件 postprocess 能读取 fig
+                plt.close(fig)  # 关闭 figure 释放内存
 
             # 预测值文本
             fc_lines = [f"**未来 {len(future_preds) if future_preds is not None else 0} 步预测值 ({target_col}):**"]
@@ -2580,14 +2579,14 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                     logger.warning(f"ZIP 打包失败: {e}")
 
             return msg_out, \
-                gr.Plot(fig) if fig is not None else None, \
+                plot_path if plot_path else None, \
                 fc_text, \
                 summary, \
-                zip_path if zip_path else "",
+                zip_path if zip_path else None
 
         except Exception as e:
             import traceback; traceback.print_exc()
-            return f"*❌ 训练异常: {str(e)[:200]}*", None, None, None, ""
+            return f"*❌ 训练异常: {str(e)[:200]}*", None, None, None, None
 
 
     # ============================================================

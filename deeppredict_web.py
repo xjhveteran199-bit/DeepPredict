@@ -2489,6 +2489,9 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
 
             # 绘图
             plot_path = None
+            hist_vals = None
+            steps_h = None
+            steps_f = None
             if future_preds is not None and len(future_preds) > 0:
                 last_n = min(100, len(y))
                 hist_vals = y[-last_n:]
@@ -2533,11 +2536,19 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
 
                     # 预测 CSV
                     fc_csv = str(output_dir / "forecast_data.csv")
-                    pd.DataFrame({
-                        'step': steps_h + steps_f,
-                        'type': ['历史']*len(steps_h) + ['预测']*len(steps_f),
-                        target_col: list(hist_vals) + [float(v) for v in future_preds]
-                    }).to_csv(fc_csv, index=False, encoding='utf-8-sig')
+                    if hist_vals is not None and steps_h is not None and steps_f is not None:
+                        pd.DataFrame({
+                            'step': steps_h + steps_f,
+                            'type': ['历史']*len(steps_h) + ['预测']*len(steps_f),
+                            target_col: list(hist_vals) + [float(v) for v in future_preds]
+                        }).to_csv(fc_csv, index=False, encoding='utf-8-sig')
+                    else:
+                        # 如果没有历史数据，只保存预测值
+                        pd.DataFrame({
+                            'step': list(range(len(future_preds))),
+                            'type': ['预测']*len(future_preds),
+                            target_col: [float(v) for v in future_preds]
+                        }).to_csv(fc_csv, index=False, encoding='utf-8-sig')
 
                     # metrics JSON
                     mt_json = str(output_dir / "metrics.json")

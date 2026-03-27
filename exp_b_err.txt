@@ -1,6 +1,0 @@
-PatchTST Epoch 1/100, Loss: 0.948681
-PatchTST Epoch 5/100, Loss: 0.567881
-PatchTST Epoch 10/100, Loss: 0.466821
-PatchTST Epoch 15/100, Loss: 0.427861
-PatchTST Epoch 20/100, Loss: 0.395296
-PatchTST Epoch 25/100, Loss: 0.365190

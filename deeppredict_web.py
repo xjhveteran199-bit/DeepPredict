@@ -2522,7 +2522,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
 
             fc_text = "\n".join(fc_lines)
 
-            # 趋势总结
+            # 趋势总结（追加下载路径信息）
             if future_preds is not None and len(future_preds) > 1:
                 first_v = float(future_preds[0])
                 last_v = float(future_preds[-1])
@@ -2535,11 +2535,18 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 else:
                     trend = "➡️ **基本平稳**"
                 summary = f"{trend}，从 {first_v:.4f} 到 {last_v:.4f}（{'+' if pct >= 0 else ''}{pct:.1f}%）"
+                
+                # 追加下载路径信息
+                if download_zip_path:
+                    summary += f"\n\n✅ **结果包已保存到下载文件夹：**\n`{download_zip_path}`"
             else:
                 summary = "*趋势分析完成*"
+                if download_zip_path:
+                    summary += f"\n\n✅ **结果包已保存到：** `{download_zip_path}`"
 
             # 打包 ZIP
             zip_path = None
+            download_zip_path = None
             if plot_path and future_preds is not None:
                 try:
                     output_dir = Path(__file__).parent / "outputs" / "wizard"
@@ -2575,6 +2582,14 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                             zf.write(hist_p, "training_history.csv")
 
                     logger.info(f"Wizard ZIP 已打包: {zip_path}")
+                    
+                    # 复制到用户下载文件夹
+                    import shutil
+                    downloads_dir = Path.home() / "Downloads"
+                    download_zip_path = str(downloads_dir / zip_name)
+                    shutil.copy2(zip_path, download_zip_path)
+                    logger.info(f"ZIP 已复制到下载文件夹: {download_zip_path}")
+                    
                 except Exception as e:
                     logger.warning(f"ZIP 打包失败: {e}")
 
@@ -2582,11 +2597,11 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
                 plot_path if plot_path else None, \
                 fc_text, \
                 summary, \
-                zip_path if zip_path else None
+                gr.update(value=zip_path) if zip_path else gr.update(value=None)
 
         except Exception as e:
             import traceback; traceback.print_exc()
-            return f"*❌ 训练异常: {str(e)[:200]}*", None, None, None, None
+            return f"*❌ 训练异常: {str(e)[:200]}*", None, None, None, gr.update(value=None)
 
 
     # ============================================================
@@ -2643,7 +2658,7 @@ with gr.Blocks(title="ChronoML v1.5 - 零门槛时序预测工具") as demo:
     )
 
     wiz_download_btn.click(
-        lambda zip_path: zip_path if zip_path else "",
+        lambda zip_file: gr.update(value=zip_file) if zip_file else gr.update(value=None),
         inputs=[wiz_download_file],
         outputs=[wiz_download_file],
         queue=False
